@@ -28,7 +28,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "h5wasm": "^0.9.0"
+    "@zarrita/storage": "^0.1.4",
+    "h5wasm": "^0.9.0",
+    "zarrita": "^0.6.1"
   },
   "devDependencies": {
     "@types/node": "^25.4.0",
