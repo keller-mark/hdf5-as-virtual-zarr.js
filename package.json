@@ -1,0 +1,40 @@
+{
+  "name": "hdf5-to-zarr",
+  "version": "0.1.0",
+  "description": "Given an input HDF5 file URL, generate a Zarr References Specification JSON output.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "generate-fixtures": "uv run test/fixtures/generate_fixtures.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.adata.zarr test/fixtures/minimal.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.adata.zarr test/fixtures/dense.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.adata.zarr test/fixtures/sparse.adata.zarr.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keller-mark/hdf5-to-zarr.js.git"
+  },
+  "keywords": [
+    "hdf5",
+    "zarr",
+    "kerchunk",
+    "references"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "h5wasm": "^0.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "@zarrita/storage": "^0.1.4",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "zarrita": "^0.6.1"
+  }
+}
