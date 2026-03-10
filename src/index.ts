@@ -334,8 +334,10 @@ export class SingleHdf5ToZarr {
 
     // Determine fill value
     let fillValue: unknown = null;
-    if (dtype.startsWith("|S") || dtype.startsWith("|O")) {
+    if (dtype.startsWith("|S")) {
       fillValue = "";
+    } else if (dtype === "|O") {
+      fillValue = null;
     } else if (/[<>|]f\d/.test(dtype)) {
       fillValue = 0.0;
     } else {

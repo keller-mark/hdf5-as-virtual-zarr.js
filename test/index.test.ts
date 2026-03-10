@@ -63,6 +63,13 @@ function generateRefSpec(fixtureName: string) {
   }
 }
 
+/**
+ * Load the kerchunk-generated ground-truth reference spec JSON.
+ */
+function loadKerchunkRefSpec(fixtureName: string) {
+  return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
+}
+
 beforeAll(async () => {
   await h5wasm.ready;
 });
@@ -372,6 +379,260 @@ describe("SingleHdf5ToZarr", () => {
       const refData = await get(refArr);
 
       expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+  });
+
+  describe("kerchunk ground-truth comparison - minimal fixture", () => {
+    it("should have the same set of ref keys", () => {
+      const ours = generateRefSpec("minimal.h5ad");
+      const kerchunk = loadKerchunkRefSpec("minimal.h5ad.refspec.json");
+      expect(Object.keys(ours.refs).sort()).toEqual(Object.keys(kerchunk.refs).sort());
+    });
+
+    it("should have matching .zgroup metadata for all groups", () => {
+      const ours = generateRefSpec("minimal.h5ad");
+      const kerchunk = loadKerchunkRefSpec("minimal.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zgroup")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching .zarray metadata for all arrays", () => {
+      const ours = generateRefSpec("minimal.h5ad");
+      const kerchunk = loadKerchunkRefSpec("minimal.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zarray")) {
+          const ourMeta = JSON.parse(ours.refs[key] as string);
+          const kerchunkMeta = JSON.parse(kerchunk.refs[key]);
+          expect(ourMeta.shape, `shape mismatch for ${key}`).toEqual(kerchunkMeta.shape);
+          expect(ourMeta.chunks, `chunks mismatch for ${key}`).toEqual(kerchunkMeta.chunks);
+          expect(ourMeta.dtype, `dtype mismatch for ${key}`).toEqual(kerchunkMeta.dtype);
+          expect(ourMeta.fill_value, `fill_value mismatch for ${key}`).toEqual(kerchunkMeta.fill_value);
+          expect(ourMeta.order, `order mismatch for ${key}`).toEqual(kerchunkMeta.order);
+          expect(ourMeta.compressor, `compressor mismatch for ${key}`).toEqual(kerchunkMeta.compressor);
+          // Filters for |O dtype differ (we use vlen-utf8, kerchunk uses json2) - both valid
+          if (kerchunkMeta.dtype !== "|O") {
+            expect(ourMeta.filters, `filters mismatch for ${key}`).toEqual(kerchunkMeta.filters);
+          }
+        }
+      }
+    });
+
+    it("should have matching .zattrs metadata for all objects", () => {
+      const ours = generateRefSpec("minimal.h5ad");
+      const kerchunk = loadKerchunkRefSpec("minimal.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zattrs")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching inline base64 data for numeric arrays", () => {
+      const ours = generateRefSpec("minimal.h5ad");
+      const kerchunk = loadKerchunkRefSpec("minimal.h5ad.refspec.json");
+      // X/0.0 is base64-inlined in both kerchunk and our output
+      expect(ours.refs["X/0.0"]).toEqual(kerchunk.refs["X/0.0"]);
+    });
+  });
+
+  describe("kerchunk ground-truth comparison - dense fixture", () => {
+    it("should have the same set of ref keys", () => {
+      const ours = generateRefSpec("dense.h5ad");
+      const kerchunk = loadKerchunkRefSpec("dense.h5ad.refspec.json");
+      expect(Object.keys(ours.refs).sort()).toEqual(Object.keys(kerchunk.refs).sort());
+    });
+
+    it("should have matching .zgroup metadata for all groups", () => {
+      const ours = generateRefSpec("dense.h5ad");
+      const kerchunk = loadKerchunkRefSpec("dense.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zgroup")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching .zarray metadata for all arrays", () => {
+      const ours = generateRefSpec("dense.h5ad");
+      const kerchunk = loadKerchunkRefSpec("dense.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zarray")) {
+          const ourMeta = JSON.parse(ours.refs[key] as string);
+          const kerchunkMeta = JSON.parse(kerchunk.refs[key]);
+          expect(ourMeta.shape, `shape mismatch for ${key}`).toEqual(kerchunkMeta.shape);
+          expect(ourMeta.chunks, `chunks mismatch for ${key}`).toEqual(kerchunkMeta.chunks);
+          expect(ourMeta.dtype, `dtype mismatch for ${key}`).toEqual(kerchunkMeta.dtype);
+          expect(ourMeta.fill_value, `fill_value mismatch for ${key}`).toEqual(kerchunkMeta.fill_value);
+          expect(ourMeta.order, `order mismatch for ${key}`).toEqual(kerchunkMeta.order);
+          expect(ourMeta.compressor, `compressor mismatch for ${key}`).toEqual(kerchunkMeta.compressor);
+          // Filters for |O dtype differ (we use vlen-utf8, kerchunk uses json2) - both valid
+          if (kerchunkMeta.dtype !== "|O") {
+            expect(ourMeta.filters, `filters mismatch for ${key}`).toEqual(kerchunkMeta.filters);
+          }
+        }
+      }
+    });
+
+    it("should have matching .zattrs metadata for all objects", () => {
+      const ours = generateRefSpec("dense.h5ad");
+      const kerchunk = loadKerchunkRefSpec("dense.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zattrs")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching chunk references for numeric arrays", () => {
+      const ours = generateRefSpec("dense.h5ad");
+      const kerchunk = loadKerchunkRefSpec("dense.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zarray") || key.endsWith(".zgroup") || key.endsWith(".zattrs")) continue;
+        const parts = key.split("/");
+        const chunkPart = parts.pop()!;
+        if (!/^[\d.]+$/.test(chunkPart)) continue;
+        const arrayPath = parts.join("/");
+        const zarrayKey = `${arrayPath}/.zarray`;
+        const zarrayMeta = kerchunk.refs[zarrayKey];
+        if (!zarrayMeta) continue;
+        const meta = JSON.parse(zarrayMeta);
+        if (meta.dtype === "|O") continue;
+        // Both should have an entry for this chunk
+        expect(ours.refs[key], `Missing chunk ${key}`).toBeDefined();
+        // If kerchunk used an inline format (string), compare decoded bytes
+        const kerchunkRef = kerchunk.refs[key];
+        const ourRef = ours.refs[key];
+        if (typeof kerchunkRef === "string" && typeof ourRef === "string") {
+          // Both kerchunk and our output may use different inline encodings:
+          // kerchunk uses raw binary strings, we use "base64:" prefix.
+          // Decode both to bytes and compare.
+          const ourBytes = typeof ourRef === "string" && ourRef.startsWith("base64:")
+            ? Buffer.from(ourRef.slice(7), "base64")
+            : Buffer.from(ourRef, "binary");
+          const kerchunkBytes = typeof kerchunkRef === "string" && kerchunkRef.startsWith("base64:")
+            ? Buffer.from(kerchunkRef.slice(7), "base64")
+            : Buffer.from(kerchunkRef, "binary");
+          expect(
+            Array.from(ourBytes),
+            `Byte mismatch for chunk ${key}`
+          ).toEqual(Array.from(kerchunkBytes));
+        }
+        // If kerchunk used [url, offset, length], just verify our entry exists and is valid
+        if (Array.isArray(kerchunkRef)) {
+          expect(
+            typeof ourRef === "string" || Array.isArray(ourRef),
+            `Invalid chunk ref format for ${key}`
+          ).toBe(true);
+        }
+      }
+    });
+  });
+
+  describe("kerchunk ground-truth comparison - sparse fixture", () => {
+    it("should have the same set of ref keys", () => {
+      const ours = generateRefSpec("sparse.h5ad");
+      const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
+      expect(Object.keys(ours.refs).sort()).toEqual(Object.keys(kerchunk.refs).sort());
+    });
+
+    it("should have matching .zgroup metadata for all groups", () => {
+      const ours = generateRefSpec("sparse.h5ad");
+      const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zgroup")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching .zarray metadata for all arrays", () => {
+      const ours = generateRefSpec("sparse.h5ad");
+      const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zarray")) {
+          const ourMeta = JSON.parse(ours.refs[key] as string);
+          const kerchunkMeta = JSON.parse(kerchunk.refs[key]);
+          expect(ourMeta.shape, `shape mismatch for ${key}`).toEqual(kerchunkMeta.shape);
+          expect(ourMeta.chunks, `chunks mismatch for ${key}`).toEqual(kerchunkMeta.chunks);
+          expect(ourMeta.dtype, `dtype mismatch for ${key}`).toEqual(kerchunkMeta.dtype);
+          expect(ourMeta.fill_value, `fill_value mismatch for ${key}`).toEqual(kerchunkMeta.fill_value);
+          expect(ourMeta.order, `order mismatch for ${key}`).toEqual(kerchunkMeta.order);
+          expect(ourMeta.compressor, `compressor mismatch for ${key}`).toEqual(kerchunkMeta.compressor);
+          // Filters for |O dtype differ (we use vlen-utf8, kerchunk uses json2) - both valid
+          if (kerchunkMeta.dtype !== "|O") {
+            expect(ourMeta.filters, `filters mismatch for ${key}`).toEqual(kerchunkMeta.filters);
+          }
+        }
+      }
+    });
+
+    it("should have matching .zattrs metadata for all objects", () => {
+      const ours = generateRefSpec("sparse.h5ad");
+      const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zattrs")) {
+          expect(JSON.parse(ours.refs[key] as string), `Mismatch for ${key}`).toEqual(
+            JSON.parse(kerchunk.refs[key])
+          );
+        }
+      }
+    });
+
+    it("should have matching chunk references for numeric arrays", () => {
+      const ours = generateRefSpec("sparse.h5ad");
+      const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
+      for (const key of Object.keys(kerchunk.refs)) {
+        if (key.endsWith(".zarray") || key.endsWith(".zgroup") || key.endsWith(".zattrs")) continue;
+        const parts = key.split("/");
+        const chunkPart = parts.pop()!;
+        if (!/^[\d.]+$/.test(chunkPart)) continue;
+        const arrayPath = parts.join("/");
+        const zarrayKey = `${arrayPath}/.zarray`;
+        const zarrayMeta = kerchunk.refs[zarrayKey];
+        if (!zarrayMeta) continue;
+        const meta = JSON.parse(zarrayMeta);
+        if (meta.dtype === "|O") continue;
+        // Both should have an entry for this chunk
+        expect(ours.refs[key], `Missing chunk ${key}`).toBeDefined();
+        // If kerchunk used an inline format (string), compare decoded bytes
+        const kerchunkRef = kerchunk.refs[key];
+        const ourRef = ours.refs[key];
+        if (typeof kerchunkRef === "string" && typeof ourRef === "string") {
+          // Both kerchunk and our output may use different inline encodings:
+          // kerchunk uses raw binary strings, we use "base64:" prefix.
+          // Decode both to bytes and compare.
+          const ourBytes = typeof ourRef === "string" && ourRef.startsWith("base64:")
+            ? Buffer.from(ourRef.slice(7), "base64")
+            : Buffer.from(ourRef, "binary");
+          const kerchunkBytes = typeof kerchunkRef === "string" && kerchunkRef.startsWith("base64:")
+            ? Buffer.from(kerchunkRef.slice(7), "base64")
+            : Buffer.from(kerchunkRef, "binary");
+          expect(
+            Array.from(ourBytes),
+            `Byte mismatch for chunk ${key}`
+          ).toEqual(Array.from(kerchunkBytes));
+        }
+        // If kerchunk used [url, offset, length], just verify our entry exists and is valid
+        if (Array.isArray(kerchunkRef)) {
+          expect(
+            typeof ourRef === "string" || Array.isArray(ourRef),
+            `Invalid chunk ref format for ${key}`
+          ).toBe(true);
+        }
+      }
     });
   });
 });

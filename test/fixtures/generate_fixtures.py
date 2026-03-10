@@ -1,19 +1,23 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
-#     "anndata>=0.10",
-#     "numpy",
-#     "pandas",
+#     "anndata>=0.11",
+#     "kerchunk",
+#     "numpy>=1,<3",
+#     "pandas>=2,<3",
 #     "scipy",
+#     "zarr>=2,<3",
 # ]
 # ///
-"""Generate HDF5 (.h5ad) and Zarr (.adata.zarr) test fixture files using AnnData."""
+"""Generate HDF5 (.h5ad), Zarr (.adata.zarr), and kerchunk reference spec (.h5ad.refspec.json) test fixture files using AnnData."""
 
+import json
 from pathlib import Path
 
 import anndata
 import numpy as np
 import pandas as pd
+from kerchunk.hdf import SingleHdf5ToZarr
 from scipy import sparse
 
 
@@ -24,6 +28,19 @@ def make_diagonal(dtype: str, m: int, n: int) -> np.ndarray:
         if i != min(m // 2, n // 2):
             mat[i, i] = i
     return mat
+
+
+def generate_refspec(h5ad_path: Path) -> None:
+    """Generate a kerchunk reference spec JSON from an h5ad file."""
+    h5chunks = SingleHdf5ToZarr(str(h5ad_path), inline_threshold=300)
+    h5dict = h5chunks.translate()
+    # Omit URL from references (use null) for testing
+    for key, val in h5dict["refs"].items():
+        if isinstance(val, list):
+            h5dict["refs"][key] = [None, *val[1:]]
+    refspec_path = h5ad_path.parent / f"{h5ad_path.name}.refspec.json"
+    refspec_path.write_text(json.dumps(h5dict))
+    print(f"  {refspec_path.name} ({refspec_path.stat().st_size} bytes)")
 
 
 def generate_dense_fixture(output_dir: Path) -> None:
@@ -56,6 +73,7 @@ def generate_dense_fixture(output_dir: Path) -> None:
     )
     adata.write_h5ad(output_dir / "dense.h5ad")
     adata.write_zarr(output_dir / "dense.adata.zarr")
+    generate_refspec(output_dir / "dense.h5ad")
 
 
 def generate_sparse_fixture(output_dir: Path) -> None:
@@ -83,6 +101,7 @@ def generate_sparse_fixture(output_dir: Path) -> None:
     )
     adata.write_h5ad(output_dir / "sparse.h5ad")
     adata.write_zarr(output_dir / "sparse.adata.zarr")
+    generate_refspec(output_dir / "sparse.h5ad")
 
 
 def generate_minimal_fixture(output_dir: Path) -> None:
@@ -98,6 +117,7 @@ def generate_minimal_fixture(output_dir: Path) -> None:
     adata = anndata.AnnData(X=X, obs=obs, var=var)
     adata.write_h5ad(output_dir / "minimal.h5ad")
     adata.write_zarr(output_dir / "minimal.adata.zarr")
+    generate_refspec(output_dir / "minimal.h5ad")
 
 
 def main() -> None:
@@ -113,6 +133,8 @@ def main() -> None:
         print(f"  {f.name} ({f.stat().st_size} bytes)")
     for f in sorted(output_dir.glob("*.adata.zarr")):
         print(f"  {f.name}/ (zarr directory store)")
+    for f in sorted(output_dir.glob("*.refspec.json")):
+        print(f"  {f.name} ({f.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
