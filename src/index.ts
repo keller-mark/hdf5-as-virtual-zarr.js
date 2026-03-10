@@ -329,7 +329,7 @@ export class SingleHdf5ToZarr {
   ) {
     this.h5File = h5File;
     this.url = options.url ?? null;
-    this.inlineThreshold = options.inlineThreshold ?? 300;
+    this.inlineThreshold = options.inlineThreshold ?? 500;
     this.refs = {};
   }
 
