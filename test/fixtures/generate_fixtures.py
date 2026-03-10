@@ -7,7 +7,7 @@
 #     "scipy",
 # ]
 # ///
-"""Generate HDF5 (.h5ad) test fixture files using AnnData."""
+"""Generate HDF5 (.h5ad) and Zarr (.adata.zarr) test fixture files using AnnData."""
 
 from pathlib import Path
 
@@ -27,7 +27,7 @@ def make_diagonal(dtype: str, m: int, n: int) -> np.ndarray:
 
 
 def generate_dense_fixture(output_dir: Path) -> None:
-    """Generate an h5ad file with a dense X matrix."""
+    """Generate an h5ad file and zarr store with a dense X matrix."""
     n_obs = 50
     n_var = 25
 
@@ -55,10 +55,11 @@ def generate_dense_fixture(output_dir: Path) -> None:
         obsm=obsm,
     )
     adata.write_h5ad(output_dir / "dense.h5ad")
+    adata.write_zarr(output_dir / "dense.adata.zarr")
 
 
 def generate_sparse_fixture(output_dir: Path) -> None:
-    """Generate an h5ad file with a sparse CSR X matrix."""
+    """Generate an h5ad file and zarr store with a sparse CSR X matrix."""
     n_obs = 50
     n_var = 25
 
@@ -81,10 +82,11 @@ def generate_sparse_fixture(output_dir: Path) -> None:
         var=var,
     )
     adata.write_h5ad(output_dir / "sparse.h5ad")
+    adata.write_zarr(output_dir / "sparse.adata.zarr")
 
 
 def generate_minimal_fixture(output_dir: Path) -> None:
-    """Generate a minimal h5ad file."""
+    """Generate a minimal h5ad file and zarr store."""
     n_obs = 5
     n_var = 3
 
@@ -95,6 +97,7 @@ def generate_minimal_fixture(output_dir: Path) -> None:
 
     adata = anndata.AnnData(X=X, obs=obs, var=var)
     adata.write_h5ad(output_dir / "minimal.h5ad")
+    adata.write_zarr(output_dir / "minimal.adata.zarr")
 
 
 def main() -> None:
@@ -108,6 +111,8 @@ def main() -> None:
     print(f"Generated fixtures in {output_dir}")
     for f in sorted(output_dir.glob("*.h5ad")):
         print(f"  {f.name} ({f.stat().st_size} bytes)")
+    for f in sorted(output_dir.glob("*.adata.zarr")):
+        print(f"  {f.name}/ (zarr directory store)")
 
 
 if __name__ == "__main__":

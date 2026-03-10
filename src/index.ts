@@ -80,37 +80,26 @@ function metadataToZarrDtype(metadata: Metadata): string {
   // Integer types
   // type 0 = H5T_INTEGER
   if (type === 0) {
-    const intFmts: Record<number, string> = { 1: "b", 2: "h", 4: "i", 8: "q" };
-    let fmt = intFmts[size];
-    if (!fmt) {
-      return `${endian}i${size}`;
+    if (size === 1) {
+      // Single-byte integers use "|" endianness (not relevant)
+      return signed ? `|i${size}` : `|u${size}`;
     }
-    if (!signed) {
-      fmt = fmt.toUpperCase();
-    }
-    return `${endian}${fmt}`;
+    return signed ? `${endian}i${size}` : `${endian}u${size}`;
   }
 
   // Float types
   // type 1 = H5T_FLOAT
   if (type === 1) {
-    const floatFmts: Record<number, string> = { 2: "e", 4: "f", 8: "d" };
-    const fmt = floatFmts[size] || `f${size}`;
-    return `${endian}${fmt}`;
+    return `${endian}f${size}`;
   }
 
   // Enum types - treat as the base type
   // type 8 = H5T_ENUM
   if (type === 8) {
-    const intFmts: Record<number, string> = { 1: "b", 2: "h", 4: "i", 8: "q" };
-    let fmt = intFmts[size];
-    if (!fmt) {
-      return `${endian}i${size}`;
+    if (size === 1) {
+      return signed ? `|i${size}` : `|u${size}`;
     }
-    if (!signed) {
-      fmt = fmt.toUpperCase();
-    }
-    return `${endian}${fmt}`;
+    return signed ? `${endian}i${size}` : `${endian}u${size}`;
   }
 
   // Compound types
@@ -198,8 +187,8 @@ function encodeFillValue(
     if (Number.isNaN(fillValue)) return "NaN";
     if (fillValue === Infinity) return "Infinity";
     if (fillValue === -Infinity) return "-Infinity";
-    // For integer types, ensure we return an integer
-    if (dtype.match(/[bBhHiIqQ]/)) {
+    // For integer types (e.g., <i4, |u1), ensure we return an integer
+    if (dtype.match(/[iu]\d/)) {
       return Math.round(fillValue);
     }
     return fillValue;
@@ -230,6 +219,33 @@ function toBase64(data: Uint8Array): string {
     binary += String.fromCharCode(data[i]);
   }
   return "base64:" + btoa(binary);
+}
+
+/**
+ * Encode an array of strings in the vlen-utf8 binary format.
+ *
+ * Format: [uint32 LE count] then for each string [uint32 LE length][utf8 bytes]
+ * This matches the format expected by zarrita's VLenUTF8 codec.
+ */
+function encodeVlenUtf8(strings: string[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const encoded = strings.map(s => encoder.encode(s));
+  const totalBytes = 4 + encoded.reduce((acc, e) => acc + 4 + e.length, 0);
+  const buffer = new ArrayBuffer(totalBytes);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  let pos = 0;
+  // Write count of items
+  view.setUint32(pos, strings.length, true);
+  pos += 4;
+  // Write each string
+  for (const enc of encoded) {
+    view.setUint32(pos, enc.length, true);
+    pos += 4;
+    bytes.set(enc, pos);
+    pos += enc.length;
+  }
+  return bytes;
 }
 
 /**
@@ -320,7 +336,7 @@ export class SingleHdf5ToZarr {
     let fillValue: unknown = null;
     if (dtype.startsWith("|S") || dtype.startsWith("|O")) {
       fillValue = "";
-    } else if (dtype.includes("f") || dtype.includes("d") || dtype.includes("e")) {
+    } else if (/[<>|]f\d/.test(dtype)) {
       fillValue = 0.0;
     } else {
       fillValue = 0;
@@ -466,10 +482,13 @@ export class SingleHdf5ToZarr {
       const data = dataset.json_value;
       if (data === null || data === undefined) return;
 
-      // For vlen strings, encode as JSON array and store inline
+      // Get string array from the data
+      const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
+
+      // Encode as vlen-utf8 binary format and inline as base64
       const key = `${path}/${chunks.map(() => "0").join(".")}`;
-      const jsonStr = JSON.stringify(data);
-      this.refs[key] = jsonStr;
+      const encoded = encodeVlenUtf8(strings);
+      this.refs[key] = toBase64(encoded);
 
       // Update .zarray to use object dtype and appropriate filters
       const zarrMeta = JSON.parse(this.refs[`${path}/.zarray`] as string);
