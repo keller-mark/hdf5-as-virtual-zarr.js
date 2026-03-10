@@ -30,7 +30,7 @@ Test fixtures consist of `.h5ad` files (HDF5), `.adata.zarr` directories (Zarr D
 
 ### Steps
 
-1. **Generate HDF5 and Zarr fixtures** using the Python script (UV resolves dependencies automatically via inline script metadata):
+1. **Generate HDF5, Zarr, and kerchunk reference spec fixtures** using the Python script (UV resolves dependencies automatically via inline script metadata):
 
    ```bash
    uv run test/fixtures/generate_fixtures.py
@@ -39,6 +39,7 @@ Test fixtures consist of `.h5ad` files (HDF5), `.adata.zarr` directories (Zarr D
    This creates for each fixture (minimal, dense, sparse):
    - `test/fixtures/{name}.h5ad` — HDF5/AnnData file
    - `test/fixtures/{name}.adata.zarr/` — Zarr v2 DirectoryStore
+   - `test/fixtures/{name}.h5ad.refspec.json` — kerchunk ground-truth reference spec JSON
 
 2. **Convert Zarr DirectoryStores to JSON** for use as in-memory stores in tests:
 
@@ -56,4 +57,4 @@ Test fixtures consist of `.h5ad` files (HDF5), `.adata.zarr` directories (Zarr D
    npm test
    ```
 
-> **Note:** The `.adata.zarr/` directories are excluded from git via `.gitignore`. Only the `.h5ad` files and `.adata.zarr.json` files are committed. To regenerate from scratch, run steps 1 and 2 above.
+> **Note:** The `.adata.zarr/` directories are excluded from git via `.gitignore`. Only the `.h5ad` files, `.adata.zarr.json` files, and `.h5ad.refspec.json` files are committed. To regenerate from scratch, run steps 1 and 2 above.
