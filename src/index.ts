@@ -81,7 +81,7 @@ function metadataToZarrDtype(metadata: Metadata): string {
   // type 0 = H5T_INTEGER
   if (type === 0) {
     if (size === 1) {
-      // Single-byte integers use "|" endianness (not relevant)
+      // Single-byte integers use "|" (byte order not applicable for 1-byte types)
       return signed ? `|i${size}` : `|u${size}`;
     }
     return signed ? `${endian}i${size}` : `${endian}u${size}`;
