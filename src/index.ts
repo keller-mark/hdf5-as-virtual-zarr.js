@@ -116,7 +116,7 @@ function metadataToZarrDtype(metadata: Metadata): string {
   // Compound types
   // type 6 = H5T_COMPOUND
   if (type === 6) {
-    return "|V" + size;
+    return `|V${size}`;
   }
 
   return `${endian}V${size}`;
