@@ -70,6 +70,13 @@ function loadKerchunkRefSpec(fixtureName: string) {
   return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
 }
 
+/**
+ * Load the zarr.consolidate_metadata-generated ground-truth consolidated metadata JSON.
+ */
+function loadGroundTruthConsolidatedMetadata(fixtureName: string) {
+  return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
+}
+
 beforeAll(async () => {
   await h5wasm.ready;
 });
@@ -499,6 +506,55 @@ describe("SingleHdf5ToZarr", () => {
         const refValue = refSpec.refs[key];
         expect(typeof refValue).toBe("string");
         expect(value).toEqual(JSON.parse(refValue as string));
+      }
+    });
+
+    it("should have same zarr_consolidated_format as ground truth for minimal fixture", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const groundTruth = loadGroundTruthConsolidatedMetadata("minimal.adata.zmetadata.json");
+      expect(consolidated.zarr_consolidated_format).toBe(groundTruth.zarr_consolidated_format);
+    });
+
+    it("should have same .zgroup and .zattrs values as ground truth for minimal fixture", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const groundTruth = loadGroundTruthConsolidatedMetadata("minimal.adata.zmetadata.json");
+      for (const key of Object.keys(groundTruth.metadata)) {
+        if (key.endsWith(".zgroup")) {
+          expect(consolidated.metadata[key], `Mismatch for ${key}`).toEqual(groundTruth.metadata[key]);
+        }
+      }
+    });
+
+    it("should match ground truth for all .zgroup entries across all fixtures", () => {
+      for (const name of ["minimal", "dense", "sparse"]) {
+        const refSpec = generateRefSpec(`${name}.h5ad`);
+        const consolidated = refSpecToConsolidatedMetadata(refSpec);
+        const groundTruth = loadGroundTruthConsolidatedMetadata(`${name}.adata.zmetadata.json`);
+        for (const key of Object.keys(groundTruth.metadata)) {
+          if (key.endsWith(".zgroup") && key in consolidated.metadata) {
+            expect(consolidated.metadata[key], `${name}: mismatch for ${key}`).toEqual(groundTruth.metadata[key]);
+          }
+        }
+      }
+    });
+
+    it("should have matching shape and dtype in .zarray entries compared to ground truth", () => {
+      for (const name of ["minimal", "dense", "sparse"]) {
+        const refSpec = generateRefSpec(`${name}.h5ad`);
+        const consolidated = refSpecToConsolidatedMetadata(refSpec);
+        const groundTruth = loadGroundTruthConsolidatedMetadata(`${name}.adata.zmetadata.json`);
+        for (const key of Object.keys(groundTruth.metadata)) {
+          if (key.endsWith(".zarray") && key in consolidated.metadata) {
+            const gt = groundTruth.metadata[key] as Record<string, unknown>;
+            const ours = consolidated.metadata[key] as Record<string, unknown>;
+            expect(ours.shape, `${name} ${key}: shape mismatch`).toEqual(gt.shape);
+            expect(ours.chunks, `${name} ${key}: chunks mismatch`).toEqual(gt.chunks);
+            expect(ours.zarr_format, `${name} ${key}: zarr_format mismatch`).toEqual(gt.zarr_format);
+            expect(ours.order, `${name} ${key}: order mismatch`).toEqual(gt.order);
+          }
+        }
       }
     });
   });

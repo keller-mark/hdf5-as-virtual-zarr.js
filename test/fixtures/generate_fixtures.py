@@ -9,7 +9,7 @@
 #     "zarr>=2,<3",
 # ]
 # ///
-"""Generate HDF5 (.h5ad), Zarr (.adata.zarr), and kerchunk reference spec (.h5ad.refspec.json) test fixture files using AnnData."""
+"""Generate HDF5 (.h5ad), Zarr (.adata.zarr), kerchunk reference spec (.h5ad.refspec.json), and Zarr consolidated metadata (.adata.zmetadata.json) test fixture files using AnnData."""
 
 import json
 from pathlib import Path
@@ -17,6 +17,7 @@ from pathlib import Path
 import anndata
 import numpy as np
 import pandas as pd
+import zarr
 from kerchunk.hdf import SingleHdf5ToZarr
 from scipy import sparse
 
@@ -41,6 +42,16 @@ def generate_refspec(h5ad_path: Path) -> None:
     refspec_path = h5ad_path.parent / f"{h5ad_path.name}.refspec.json"
     refspec_path.write_text(json.dumps(h5dict))
     print(f"  {refspec_path.name} ({refspec_path.stat().st_size} bytes)")
+
+
+def generate_consolidated_metadata(zarr_path: Path) -> None:
+    """Generate consolidated metadata JSON from a Zarr store."""
+    zarr.consolidate_metadata(str(zarr_path))
+    zmetadata_path = zarr_path / ".zmetadata"
+    zmetadata = json.loads(zmetadata_path.read_text())
+    output_path = zarr_path.parent / f"{zarr_path.stem}.zmetadata.json"
+    output_path.write_text(json.dumps(zmetadata))
+    print(f"  {output_path.name} ({output_path.stat().st_size} bytes)")
 
 
 def generate_dense_fixture(output_dir: Path) -> None:
@@ -74,6 +85,7 @@ def generate_dense_fixture(output_dir: Path) -> None:
     adata.write_h5ad(output_dir / "dense.h5ad")
     adata.write_zarr(output_dir / "dense.adata.zarr")
     generate_refspec(output_dir / "dense.h5ad")
+    generate_consolidated_metadata(output_dir / "dense.adata.zarr")
 
 
 def generate_sparse_fixture(output_dir: Path) -> None:
@@ -102,6 +114,7 @@ def generate_sparse_fixture(output_dir: Path) -> None:
     adata.write_h5ad(output_dir / "sparse.h5ad")
     adata.write_zarr(output_dir / "sparse.adata.zarr")
     generate_refspec(output_dir / "sparse.h5ad")
+    generate_consolidated_metadata(output_dir / "sparse.adata.zarr")
 
 
 def generate_minimal_fixture(output_dir: Path) -> None:
@@ -118,6 +131,7 @@ def generate_minimal_fixture(output_dir: Path) -> None:
     adata.write_h5ad(output_dir / "minimal.h5ad")
     adata.write_zarr(output_dir / "minimal.adata.zarr")
     generate_refspec(output_dir / "minimal.h5ad")
+    generate_consolidated_metadata(output_dir / "minimal.adata.zarr")
 
 
 def main() -> None:
@@ -134,6 +148,8 @@ def main() -> None:
     for f in sorted(output_dir.glob("*.adata.zarr")):
         print(f"  {f.name}/ (zarr directory store)")
     for f in sorted(output_dir.glob("*.refspec.json")):
+        print(f"  {f.name} ({f.stat().st_size} bytes)")
+    for f in sorted(output_dir.glob("*.zmetadata.json")):
         print(f"  {f.name} ({f.stat().st_size} bytes)")
 
 
