@@ -206,14 +206,33 @@ function encodeFillValue(
 }
 
 /**
- * Encode binary data as base64.
+ * Inline binary data, matching kerchunk's encoding:
+ * - If all bytes are < 128 (ASCII-safe), store as a raw character string
+ * - Otherwise, encode as "base64:" + base64
  */
-function toBase64(data: Uint8Array): string {
-  // Node.js environment
+function inlineBytes(data: Uint8Array): string {
+  // Check if all bytes are ASCII-safe (< 128)
+  let asciiSafe = true;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] >= 128) {
+      asciiSafe = false;
+      break;
+    }
+  }
+
+  if (asciiSafe) {
+    // Encode as raw character string (each byte → char code)
+    let result = "";
+    for (let i = 0; i < data.length; i++) {
+      result += String.fromCharCode(data[i]);
+    }
+    return result;
+  }
+
+  // Fall back to base64
   if (typeof Buffer !== "undefined") {
     return "base64:" + Buffer.from(data).toString("base64");
   }
-  // Browser environment
   let binary = "";
   for (let i = 0; i < data.length; i++) {
     binary += String.fromCharCode(data[i]);
@@ -222,30 +241,68 @@ function toBase64(data: Uint8Array): string {
 }
 
 /**
- * Encode an array of strings in the vlen-utf8 binary format.
+ * Encode an array of strings in the json2 codec format used by kerchunk.
  *
- * Format: [uint32 LE count] then for each string [uint32 LE length][utf8 bytes]
- * This matches the format expected by zarrita's VLenUTF8 codec.
+ * Format: ["str1", "str2", ..., "|O", [shape]]
+ * This matches the format expected by kerchunk/numcodecs json2 codec.
  */
-function encodeVlenUtf8(strings: string[]): Uint8Array {
-  const encoder = new TextEncoder();
-  const encoded = strings.map(s => encoder.encode(s));
-  const totalBytes = 4 + encoded.reduce((acc, e) => acc + 4 + e.length, 0);
-  const buffer = new ArrayBuffer(totalBytes);
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  let pos = 0;
-  // Write count of items
-  view.setUint32(pos, strings.length, true);
-  pos += 4;
-  // Write each string
-  for (const enc of encoded) {
-    view.setUint32(pos, enc.length, true);
-    pos += 4;
-    bytes.set(enc, pos);
-    pos += enc.length;
+function encodeJson2(strings: string[], shape: number[]): string {
+  const parts: unknown[] = [...strings, "|O", shape];
+  return JSON.stringify(parts);
+}
+
+/**
+ * The json2 filter metadata used by kerchunk for vlen string data.
+ * Matches Python's json.JSONEncoder default parameters.
+ */
+const JSON2_FILTER = {
+  allow_nan: true,
+  check_circular: true,
+  encoding: "utf-8",
+  ensure_ascii: true,
+  id: "json2",
+  indent: null,
+  separators: [",", ":"],
+  skipkeys: false,
+  sort_keys: true,
+  strict: true,
+};
+
+/**
+ * JSON.stringify with keys sorted alphabetically at all levels.
+ * Matches Python's json.dumps(obj, sort_keys=True) behavior.
+ */
+function jsonStringifySorted(obj: unknown): string {
+  return JSON.stringify(obj, (_key, value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value).sort()) {
+        sorted[k] = (value as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return value;
+  });
+}
+
+/**
+ * Serialize a ZarrArrayMeta to JSON, matching kerchunk's output.
+ * For float dtypes, ensures fill_value is serialized with a decimal point
+ * (e.g., 0.0 instead of 0) to match Python's json.dumps behavior.
+ */
+function serializeZarrayMeta(meta: ZarrArrayMeta): string {
+  let json = jsonStringifySorted(meta);
+  // For float dtypes, ensure fill_value is serialized as a float (e.g., 0.0 not 0)
+  if (
+    /[<>]f\d/.test(meta.dtype) &&
+    typeof meta.fill_value === "number" &&
+    Number.isFinite(meta.fill_value) &&
+    meta.fill_value === Math.round(meta.fill_value)
+  ) {
+    const intStr = String(Math.round(meta.fill_value));
+    json = json.replace(`"fill_value":${intStr}`, `"fill_value":${intStr}.0`);
   }
-  return bytes;
+  return json;
 }
 
 /**
@@ -272,7 +329,7 @@ export class SingleHdf5ToZarr {
   ) {
     this.h5File = h5File;
     this.url = options.url ?? null;
-    this.inlineThreshold = options.inlineThreshold ?? 500;
+    this.inlineThreshold = options.inlineThreshold ?? 300;
     this.refs = {};
   }
 
@@ -286,7 +343,7 @@ export class SingleHdf5ToZarr {
     this.refs = {};
 
     // Root group
-    this.refs[".zgroup"] = JSON.stringify({ zarr_format: 2 } as ZarrGroupMeta);
+    this.refs[".zgroup"] = jsonStringifySorted({ zarr_format: 2 } as ZarrGroupMeta);
     this.transferAttrs(this.h5File, "");
 
     // Walk all paths in the file
@@ -312,7 +369,7 @@ export class SingleHdf5ToZarr {
    * Process an HDF5 group into Zarr group metadata.
    */
   private processGroup(path: string, group: Group): void {
-    this.refs[`${path}/.zgroup`] = JSON.stringify({
+    this.refs[`${path}/.zgroup`] = jsonStringifySorted({
       zarr_format: 2,
     } as ZarrGroupMeta);
     this.transferAttrs(group, path);
@@ -367,7 +424,7 @@ export class SingleHdf5ToZarr {
       filters: zarrFilters,
     };
 
-    this.refs[`${path}/.zarray`] = JSON.stringify(zarrMeta);
+    this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
 
     // Transfer attributes
     this.transferAttrs(dataset, path);
@@ -379,7 +436,7 @@ export class SingleHdf5ToZarr {
       ? JSON.parse(this.refs[existingAttrsKey] as string)
       : {};
     existingAttrs["_ARRAY_DIMENSIONS"] = dims;
-    this.refs[existingAttrsKey] = JSON.stringify(existingAttrs);
+    this.refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
 
     // Process data chunks
     this.processChunks(path, dataset, metadata, chunks);
@@ -487,17 +544,16 @@ export class SingleHdf5ToZarr {
       // Get string array from the data
       const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
 
-      // Encode as vlen-utf8 binary format and inline as base64
+      // Encode using json2 codec format (matching kerchunk)
       const key = `${path}/${chunks.map(() => "0").join(".")}`;
-      const encoded = encodeVlenUtf8(strings);
-      this.refs[key] = toBase64(encoded);
+      this.refs[key] = encodeJson2(strings, shape);
 
-      // Update .zarray to use object dtype and appropriate filters
+      // Update .zarray to use object dtype and json2 filter
       const zarrMeta = JSON.parse(this.refs[`${path}/.zarray`] as string);
       zarrMeta.dtype = "|O";
-      zarrMeta.filters = [{ id: "vlen-utf8" }];
+      zarrMeta.filters = [JSON2_FILTER];
       zarrMeta.compressor = null;
-      this.refs[`${path}/.zarray`] = JSON.stringify(zarrMeta);
+      this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
     } catch {
       // Cannot read vlen data
     }
@@ -525,11 +581,7 @@ export class SingleHdf5ToZarr {
           (value as unknown as { byteLength: number }).byteLength
         );
         const key = `${path}/${chunks.map(() => "0").join(".")}`;
-        this.refs[key] = toBase64(bytes);
-      } else if (Array.isArray(value)) {
-        // String arrays
-        const key = `${path}/${chunks.map(() => "0").join(".")}`;
-        this.refs[key] = JSON.stringify(value);
+        this.refs[key] = inlineBytes(bytes);
       }
     } catch {
       // Cannot read dataset
@@ -602,7 +654,7 @@ export class SingleHdf5ToZarr {
               (data as unknown as { byteLength: number }).byteLength
             );
           }
-          this.refs[key] = toBase64(bytes);
+          this.refs[key] = inlineBytes(bytes);
         }
       } catch {
         // Skip chunks that can't be read
@@ -643,7 +695,7 @@ export class SingleHdf5ToZarr {
 
     if (Object.keys(attrs).length > 0) {
       const key = path ? `${path}/.zattrs` : ".zattrs";
-      this.refs[key] = JSON.stringify(attrs);
+      this.refs[key] = jsonStringifySorted(attrs);
     }
   }
 }
