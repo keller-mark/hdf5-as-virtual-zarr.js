@@ -54,7 +54,7 @@ Test fixtures consist of `.h5ad` files (HDF5), `.adata.zarr` directories (Zarr D
 3. **Run tests**:
 
    ```bash
-   npm test
+   pnpm test
    ```
 
 > **Note:** The `.adata.zarr/` directories are excluded from git via `.gitignore`. Only the `.h5ad` files, `.adata.zarr.json` files, and `.h5ad.refspec.json` files are committed. To regenerate from scratch, run steps 1 and 2 above.
