@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import * as h5wasm from "h5wasm/node";
 import { open, get, root as zarrRoot } from "zarrita";
 import ReferenceStore from "@zarrita/storage/ref";
-import { SingleHdf5ToZarr } from "../src/index.js";
+import { SingleHdf5ToZarr, refSpecToConsolidatedMetadata } from "../src/index.js";
 import { resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -67,6 +67,13 @@ function generateRefSpec(fixtureName: string) {
  * Load the kerchunk-generated ground-truth reference spec JSON.
  */
 function loadKerchunkRefSpec(fixtureName: string) {
+  return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
+}
+
+/**
+ * Load the zarr.consolidate_metadata-generated ground-truth consolidated metadata JSON.
+ */
+function loadGroundTruthConsolidatedMetadata(fixtureName: string) {
   return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
 }
 
@@ -426,6 +433,129 @@ describe("SingleHdf5ToZarr", () => {
       const ours = generateRefSpec("sparse.h5ad");
       const kerchunk = loadKerchunkRefSpec("sparse.h5ad.refspec.json");
       expect(ours).toEqual(kerchunk);
+    });
+  });
+
+  describe("refSpecToConsolidatedMetadata", () => {
+    it("should produce consolidated metadata with zarr_consolidated_format 1", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      expect(consolidated.zarr_consolidated_format).toBe(1);
+      expect(consolidated.metadata).toBeDefined();
+      expect(typeof consolidated.metadata).toBe("object");
+    });
+
+    it("should include root .zgroup as parsed JSON", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      expect(consolidated.metadata[".zgroup"]).toEqual({ zarr_format: 2 });
+    });
+
+    it("should include root .zattrs as parsed JSON", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      expect(consolidated.metadata[".zattrs"]).toBeDefined();
+      expect(consolidated.metadata[".zattrs"]["encoding-type"]).toBe("anndata");
+    });
+
+    it("should include .zarray entries as parsed JSON", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const xArray = consolidated.metadata["X/.zarray"];
+      expect(xArray).toBeDefined();
+      expect(xArray.zarr_format).toBe(2);
+      expect(xArray.shape).toEqual([5, 3]);
+      expect(xArray.dtype).toBeDefined();
+    });
+
+    it("should not include data chunk refs", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      for (const key of Object.keys(consolidated.metadata)) {
+        expect(
+          key.endsWith(".zgroup") || key.endsWith(".zarray") || key.endsWith(".zattrs"),
+          `Unexpected non-metadata key: ${key}`
+        ).toBe(true);
+      }
+    });
+
+    it("should include all metadata keys from the reference spec", () => {
+      const refSpec = generateRefSpec("dense.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const metaKeys = Object.keys(refSpec.refs).filter(
+        (k) => k.endsWith(".zgroup") || k.endsWith(".zarray") || k.endsWith(".zattrs")
+      );
+      expect(Object.keys(consolidated.metadata).sort()).toEqual(metaKeys.sort());
+    });
+
+    it("should produce correct consolidated metadata for sparse fixture", () => {
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      // X should be a group (sparse CSR) with .zgroup
+      expect(consolidated.metadata["X/.zgroup"]).toEqual({ zarr_format: 2 });
+      // X/data, X/indices, X/indptr should have .zarray
+      expect(consolidated.metadata["X/data/.zarray"]).toBeDefined();
+      expect(consolidated.metadata["X/indices/.zarray"]).toBeDefined();
+      expect(consolidated.metadata["X/indptr/.zarray"]).toBeDefined();
+    });
+
+    it("should produce parsed metadata values that match the ref spec JSON strings", () => {
+      const refSpec = generateRefSpec("dense.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      for (const [key, value] of Object.entries(consolidated.metadata)) {
+        const refValue = refSpec.refs[key];
+        expect(typeof refValue).toBe("string");
+        expect(value).toEqual(JSON.parse(refValue as string));
+      }
+    });
+
+    it("should have same zarr_consolidated_format as ground truth for minimal fixture", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const groundTruth = loadGroundTruthConsolidatedMetadata("minimal.adata.zmetadata.json");
+      expect(consolidated.zarr_consolidated_format).toBe(groundTruth.zarr_consolidated_format);
+    });
+
+    it("should have same .zgroup and .zattrs values as ground truth for minimal fixture", () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const consolidated = refSpecToConsolidatedMetadata(refSpec);
+      const groundTruth = loadGroundTruthConsolidatedMetadata("minimal.adata.zmetadata.json");
+      for (const key of Object.keys(groundTruth.metadata)) {
+        if (key.endsWith(".zgroup")) {
+          expect(consolidated.metadata[key], `Mismatch for ${key}`).toEqual(groundTruth.metadata[key]);
+        }
+      }
+    });
+
+    it("should match ground truth for all .zgroup entries across all fixtures", () => {
+      for (const name of ["minimal", "dense", "sparse"]) {
+        const refSpec = generateRefSpec(`${name}.h5ad`);
+        const consolidated = refSpecToConsolidatedMetadata(refSpec);
+        const groundTruth = loadGroundTruthConsolidatedMetadata(`${name}.adata.zmetadata.json`);
+        for (const key of Object.keys(groundTruth.metadata)) {
+          if (key.endsWith(".zgroup") && key in consolidated.metadata) {
+            expect(consolidated.metadata[key], `${name}: mismatch for ${key}`).toEqual(groundTruth.metadata[key]);
+          }
+        }
+      }
+    });
+
+    it("should have matching shape and dtype in .zarray entries compared to ground truth", () => {
+      for (const name of ["minimal", "dense", "sparse"]) {
+        const refSpec = generateRefSpec(`${name}.h5ad`);
+        const consolidated = refSpecToConsolidatedMetadata(refSpec);
+        const groundTruth = loadGroundTruthConsolidatedMetadata(`${name}.adata.zmetadata.json`);
+        for (const key of Object.keys(groundTruth.metadata)) {
+          if (key.endsWith(".zarray") && key in consolidated.metadata) {
+            const gt = groundTruth.metadata[key] as Record<string, unknown>;
+            const ours = consolidated.metadata[key] as Record<string, unknown>;
+            expect(ours.shape, `${name} ${key}: shape mismatch`).toEqual(gt.shape);
+            expect(ours.chunks, `${name} ${key}: chunks mismatch`).toEqual(gt.chunks);
+            expect(ours.zarr_format, `${name} ${key}: zarr_format mismatch`).toEqual(gt.zarr_format);
+            expect(ours.order, `${name} ${key}: order mismatch`).toEqual(gt.order);
+          }
+        }
+      }
     });
   });
 });
