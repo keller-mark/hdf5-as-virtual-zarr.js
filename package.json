@@ -14,6 +14,10 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "demo:dev": "vite -c vite.config.demo.js",
+    "demo:build": "vite build -c vite.config.demo.js",
+    "demo:preview": "vite preview -c vite.config.demo.js",
     "generate-fixtures": "pnpm run generate-fixtures-v2 && pnpm run generate-fixtures-v3",
     "generate-fixtures-v2": "uv run test/fixtures/generate_fixtures.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.adata.zarr test/fixtures/minimal.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.adata.zarr test/fixtures/dense.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.adata.zarr test/fixtures/sparse.adata.zarr.json",
     "generate-fixtures-v3": "uv run test/fixtures/generate_fixtures_v3.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.v3.adata.zarr test/fixtures/minimal.v3.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.v3.adata.zarr test/fixtures/dense.v3.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.v3.adata.zarr test/fixtures/sparse.v3.adata.zarr.json"
@@ -33,9 +37,11 @@
     "h5wasm": "^0.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/node": "^25.4.0",
     "@zarrita/storage": "^0.1.4",
     "typescript": "^5.7.0",
+    "vite": "^7.3.1",
     "vitest": "^3.0.0",
     "zarrita": "^0.6.1"
   }

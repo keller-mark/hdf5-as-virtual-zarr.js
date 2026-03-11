@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HDF5 to Zarr</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 2rem; color: #222; }
+    h1 { margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-bottom: 1.5rem; }
+    #drop-zone {
+      border: 2px dashed #aaa; border-radius: 8px; padding: 2rem; text-align: center;
+      margin-bottom: 1rem; transition: border-color 0.2s, background 0.2s; cursor: pointer;
+    }
+    #drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+    #drop-zone p { margin-top: 0.5rem; color: #888; }
+    input[type="file"] { display: none; }
+    .actions { margin-bottom: 1rem; display: flex; gap: 0.5rem; }
+    button {
+      padding: 0.5rem 1rem; border: 1px solid #ccc; border-radius: 4px;
+      background: #f9f9f9; cursor: pointer; font-size: 0.9rem;
+    }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button:not(:disabled):hover { background: #eee; }
+    #status { margin-bottom: 1rem; color: #555; }
+    #output {
+      background: #f6f8fa; border: 1px solid #ddd; border-radius: 4px;
+      padding: 1rem; overflow: auto; max-height: 70vh; font-size: 0.85rem;
+      white-space: pre-wrap; word-break: break-all; display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>HDF5 to Zarr</h1>
+  <p class="subtitle">Select or drop an HDF5 file to generate a Zarr reference spec JSON.</p>
+
+  <div id="drop-zone">
+    <label>
+      <strong>Choose an HDF5 file</strong>
+      <input type="file" id="file-input" accept=".h5,.hdf5,.h5ad,.he5,.hdf">
+    </label>
+    <p>or drag &amp; drop here</p>
+  </div>
+
+  <div class="actions">
+    <button id="download-btn" disabled>Download JSON</button>
+  </div>
+
+  <p id="status"></p>
+  <pre id="output"></pre>
+
+  <script type="module" src="./demo/main.js"></script>
+</body>
+</html>
