@@ -1,8 +1,8 @@
-// @ts-nocheck - jsfive is plain JS without type declarations
-import { File as Hdf5File, Dataset as Hdf5Dataset, Group as Hdf5Group } from "../jsfive/esm/high-level.js";
-import { DataObjects } from "../jsfive/esm/dataobjects.js";
-import { BTreeV1RawDataChunks } from "../jsfive/esm/btree.js";
-import { struct } from "../jsfive/esm/core.js";
+import { File as Hdf5File, Dataset as Hdf5Dataset, Group as Hdf5Group } from "./hdf5/high-level.js";
+import type { DataObjects } from "./hdf5/dataobjects.js";
+import { BTreeV1RawDataChunks } from "./hdf5/btree.js";
+import type { ChunkKey } from "./hdf5/btree.js";
+import { struct } from "./hdf5/core.js";
 
 /**
  * Hidden HDF5 attributes that should not be transferred to Zarr.
@@ -39,6 +39,19 @@ interface ZarrArrayMeta {
  */
 interface ZarrGroupMeta {
   zarr_format: 2;
+}
+
+/**
+ * Minimal Source interface compatible with @chunkd/source.
+ * Accepts any object implementing fetch(offset, length?) for partial reads.
+ */
+export interface Source {
+  type: string;
+  url: URL;
+  metadata?: { size?: number };
+  head?(options?: { signal: AbortSignal }): Promise<{ size?: number }>;
+  close?(): Promise<void>;
+  fetch(offset: number, length?: number, options?: { signal: AbortSignal }): Promise<ArrayBuffer>;
 }
 
 /**
@@ -294,15 +307,13 @@ function serializeZarrayMeta(meta: ZarrArrayMeta): string {
   return json;
 }
 
-const UNDEFINED_ADDRESS = 0xffffffffffff; // 2^48-1 (jsfive uses Number from 8-byte LE max)
+import { UNDEFINED_ADDRESS } from "./hdf5/misc-low-level.js";
 
 /**
- * Get storage info for a dataset's DataObjects, returning chunk
- * byte offsets and sizes for file references.
- *
- * Based on jsfive's DataObjects._get_chunk_params and _get_data_message_properties.
+ * Get storage info from a vendored DataObjects instance.
+ * Reads layout class, contiguous offset/size, or chunk address/dims/shape.
  */
-function getStorageInfo(dataobjects: any, fh: ArrayBuffer): {
+function getStorageInfo(dataobjects: DataObjects): {
   layoutClass: number;
   contiguousOffset?: number;
   contiguousSize?: number;
@@ -314,35 +325,21 @@ function getStorageInfo(dataobjects: any, fh: ArrayBuffer): {
   const msg = dataobjects.find_msg_type(DATA_STORAGE_MSG_TYPE)[0];
   if (!msg) return { layoutClass: -1 };
 
-  const msgOffset = msg.get("offset_to_message");
-  const [version, arg1, arg2] = struct.unpack_from("<BBB", fh, msgOffset);
-
-  let dims: number, layoutClass: number, propertyOffset: number;
-
-  if (version === 1 || version === 2) {
-    dims = arg1;
-    layoutClass = arg2;
-    propertyOffset = msgOffset + struct.calcsize("<BBB") + struct.calcsize("<BI");
-  } else if (version === 3 || version === 4) {
-    layoutClass = arg1;
-    propertyOffset = msgOffset + struct.calcsize("<BB");
-    dims = 0; // will be read below for chunked
-  } else {
-    return { layoutClass: -1 };
-  }
+  const relOffset = msg.get("offset_to_message") - (dataobjects as any).bufStart;
+  const props = dataobjects._get_data_message_properties(relOffset);
+  const { version, dims, layout_class: layoutClass, property_offset } = props;
 
   if (layoutClass === 1) {
     // Contiguous storage
-    const dataOffset = struct.unpack_from("<Q", fh, propertyOffset)[0];
+    const localBuf = (dataobjects as any).buf as ArrayBuffer;
+    const dataOffset = struct.unpack_from("<Q", localBuf, property_offset)[0];
     if (dataOffset === UNDEFINED_ADDRESS || dataOffset >= Number.MAX_SAFE_INTEGER * 0.99) {
       return { layoutClass: 1 };
     }
-    // For version 3, size follows the address
     let size: number;
     if (version === 3 || version === 4) {
-      size = struct.unpack_from("<Q", fh, propertyOffset + 8)[0];
+      size = struct.unpack_from("<Q", localBuf, property_offset + 8)[0];
     } else {
-      // For v1/v2, compute from shape * dtype size
       const shape = dataobjects.shape;
       const dtype = dataobjects.dtype;
       let itemSize = 0;
@@ -350,78 +347,63 @@ function getStorageInfo(dataobjects: any, fh: ArrayBuffer): {
         const m = dtype.match(/\d+$/);
         itemSize = m ? parseInt(m[0], 10) : 1;
       } else {
-        itemSize = 8; // reference size
+        itemSize = 8;
       }
       size = shape.reduce((a: number, b: number) => a * b, 1) * itemSize;
     }
     return { layoutClass: 1, contiguousOffset: dataOffset, contiguousSize: size };
   } else if (layoutClass === 2) {
-    // Chunked storage
-    let address: number, dataOffsetForChunks: number;
-    if (version === 1 || version === 2) {
-      address = struct.unpack_from("<Q", fh, propertyOffset)[0];
-      dataOffsetForChunks = propertyOffset + struct.calcsize("<Q");
-    } else {
-      // version 3
-      const result = struct.unpack_from("<BQ", fh, propertyOffset);
-      dims = result[0];
-      address = result[1];
-      dataOffsetForChunks = propertyOffset + struct.calcsize("<BQ");
-    }
-
-    if (address === UNDEFINED_ADDRESS || address >= Number.MAX_SAFE_INTEGER * 0.99) {
+    // Use the vendored DataObjects' chunk params
+    dataobjects._get_chunk_params();
+    const chunkAddress = dataobjects._chunk_address;
+    const chunkDims = dataobjects._chunk_dims;
+    const chunkShape = dataobjects._chunks;
+    if (chunkAddress == null || chunkAddress === UNDEFINED_ADDRESS) {
       return { layoutClass: 2 };
     }
-
-    const fmt = "<" + (dims - 1).toFixed() + "I";
-    const chunkShape = struct.unpack_from(fmt, fh, dataOffsetForChunks);
-
     return {
       layoutClass: 2,
-      chunkAddress: address,
-      chunkDims: dims,
-      chunkShape: Array.isArray(chunkShape) ? chunkShape : [chunkShape],
+      chunkAddress: chunkAddress!,
+      chunkDims: chunkDims!,
+      chunkShape: chunkShape!,
     };
   }
 
-  return { layoutClass: layoutClass };
+  return { layoutClass };
 }
 
 /**
  * Get chunk locations from a B-tree for chunked datasets.
- * Returns an array of { chunkIndex, offset, size } objects.
+ * Now async – creates the B-tree via Source.fetch().
  */
-function getChunkLocations(
-  fh: ArrayBuffer,
+async function getChunkLocations(
+  source: Source,
   btreeAddress: number,
   chunkDims: number,
   dataShape: number[],
   chunkShape: number[]
-): Array<{ chunkIndex: number[]; offset: number; size: number }> {
-  const btree = new BTreeV1RawDataChunks(fh, btreeAddress, chunkDims);
+): Promise<Array<{ chunkIndex: number[]; offset: number; size: number }>> {
+  const btree = await BTreeV1RawDataChunks.create(source, btreeAddress, chunkDims);
   const results: Array<{ chunkIndex: number[]; offset: number; size: number }> = [];
 
   const leafNodes = btree.all_nodes.get(0);
   if (!leafNodes) return results;
 
   for (const node of leafNodes) {
-    const nodeKeys = node.get("keys");
-    const nodeAddresses = node.get("addresses");
+    const nodeKeys = node.keys;
+    const nodeAddresses = node.addresses;
     const nkeys = nodeKeys.length;
 
     for (let ik = 0; ik < nkeys; ik++) {
-      const nodeKey = nodeKeys[ik];
+      const nodeKey: ChunkKey = nodeKeys[ik];
       const addr = nodeAddresses[ik];
-      const chunkOffset = nodeKey.get("chunk_offset");
-      const chunkSize = nodeKey.get("chunk_size");
+      const chunkOffset = nodeKey.chunk_offset;
+      const chunkSize = nodeKey.chunk_size;
 
-      // Convert chunk_offset (element offsets) to chunk indices
       const chunkIndex = chunkOffset.slice(0, -1).map((co: number, d: number) =>
         Math.floor(co / chunkShape[d])
       );
 
-      // For 1D data, chunk_offset has 2 entries (dim + trailing 0)
-      // chunkIndex should match the number of data dimensions
       while (chunkIndex.length < dataShape.length) {
         chunkIndex.push(0);
       }
@@ -448,12 +430,14 @@ const DATATYPE_ENUMERATED = 8;
  * Returns a Map from attribute name to datatype class number.
  * Used to detect enum (boolean) attributes.
  */
-function getAttrDatatypeClasses(dataobjects: any, fh: ArrayBuffer): Map<string, number> {
+function getAttrDatatypeClasses(dataobjects: DataObjects): Map<string, number> {
   const result = new Map<string, number>();
   const attrMsgs = dataobjects.find_msg_type(ATTRIBUTE_MSG_TYPE);
+  const fh = (dataobjects as any).buf as ArrayBuffer;
+  const bufStart = (dataobjects as any).bufStart as number;
 
   for (const msg of attrMsgs) {
-    let offset = msg.get("offset_to_message");
+    let offset = msg.get("offset_to_message") - bufStart;
     const version = struct.unpack_from("<B", fh, offset)[0];
 
     let nameSize: number;
@@ -498,26 +482,25 @@ function getAttrDatatypeClasses(dataobjects: any, fh: ArrayBuffer): Map<string, 
  * following the Zarr References Specification v1.
  *
  * Ported from kerchunk's SingleHdf5ToZarr Python class.
- * Uses jsfive for HDF5 parsing from an ArrayBuffer.
+ * Uses vendored async HDF5 parser with Source-based partial reads.
  */
 export class SingleHdf5ToZarr {
-  private h5File: any;
-  private fh: ArrayBuffer;
+  private source: Source;
+  private h5File!: Hdf5File;
   private url: string | null;
   private inlineThreshold: number;
   private refs: Record<string, string | [string | null, number, number]>;
 
   /**
-   * @param buffer - The full HDF5 file as an ArrayBuffer.
+   * @param source - A Source instance for reading the HDF5 file.
    * @param options - Configuration options.
    */
   constructor(
-    buffer: ArrayBuffer,
+    source: Source,
     options: SingleHdf5ToZarrOptions = {}
   ) {
-    this.fh = buffer;
-    this.h5File = new Hdf5File(buffer);
-    this.url = options.url ?? null;
+    this.source = source;
+    this.url = options.url !== undefined ? options.url : source.url.href;
     this.inlineThreshold = options.inlineThreshold ?? 300;
     this.refs = {};
   }
@@ -525,15 +508,16 @@ export class SingleHdf5ToZarr {
   /**
    * Translate the HDF5 file content into a Zarr reference spec.
    */
-  translate(): ReferenceSpec {
+  async translate(): Promise<ReferenceSpec> {
+    this.h5File = await Hdf5File.create(this.source);
     this.refs = {};
 
     // Root group
     this.refs[".zgroup"] = jsonStringifySorted({ zarr_format: 2 } as ZarrGroupMeta);
-    this.transferAttrs(this.h5File, "");
+    await this.transferAttrs(this.h5File, "");
 
     // Walk all items recursively
-    this.walkGroup(this.h5File, "");
+    await this.walkGroup(this.h5File, "");
 
     return {
       version: 1,
@@ -544,23 +528,23 @@ export class SingleHdf5ToZarr {
   /**
    * Recursively walk an HDF5 group, processing all children.
    */
-  private walkGroup(group: any, parentPath: string): void {
+  private async walkGroup(group: Hdf5Group, parentPath: string): Promise<void> {
     const keys = group.keys;
     for (const key of keys) {
       const childPath = parentPath ? `${parentPath}/${key}` : key;
-      let child: any;
+      let child: Hdf5Group | Hdf5Dataset;
       try {
-        child = group.get(key);
+        child = await group.get(key);
       } catch {
         continue;
       }
       if (!child) continue;
 
       if (child instanceof Hdf5Dataset) {
-        this.processDataset(childPath, child);
+        await this.processDataset(childPath, child);
       } else if (child instanceof Hdf5Group) {
-        this.processGroup(childPath, child);
-        this.walkGroup(child, childPath);
+        await this.processGroup(childPath, child);
+        await this.walkGroup(child, childPath);
       }
     }
   }
@@ -568,22 +552,22 @@ export class SingleHdf5ToZarr {
   /**
    * Process an HDF5 group into Zarr group metadata.
    */
-  private processGroup(path: string, group: any): void {
+  private async processGroup(path: string, group: Hdf5Group): Promise<void> {
     this.refs[`${path}/.zgroup`] = jsonStringifySorted({
       zarr_format: 2,
     } as ZarrGroupMeta);
-    this.transferAttrs(group, path);
+    await this.transferAttrs(group, path);
   }
 
   /**
    * Process an HDF5 dataset into Zarr array metadata and chunk references.
    */
-  private processDataset(path: string, dataset: any): void {
+  private async processDataset(path: string, dataset: Hdf5Dataset): Promise<void> {
     const dataobjects = dataset._dataobjects;
     const shape = dataobjects.shape;
     if (!shape || shape.length === 0) {
       // Scalar dataset
-      this.processScalarDataset(path, dataset, dataobjects);
+      await this.processScalarDataset(path, dataset, dataobjects);
       return;
     }
 
@@ -625,7 +609,7 @@ export class SingleHdf5ToZarr {
     this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
 
     // Transfer attributes
-    this.transferAttrs(dataset, path);
+    await this.transferAttrs(dataset, path);
 
     // Add _ARRAY_DIMENSIONS
     const dims = this.getArrayDims(dataset, path, shape);
@@ -638,18 +622,18 @@ export class SingleHdf5ToZarr {
 
     // Process data: vlen strings get inlined, others get file references
     if (isVlen) {
-      this.inlineVlenData(path, dataset, shape, chunks);
+      await this.inlineVlenData(path, dataset, shape, chunks);
     } else if (isFixedString) {
-      this.inlineFixedStringData(path, dataset, shape, chunks, rawDtype);
+      await this.inlineFixedStringData(path, dataset, shape, chunks, rawDtype);
     } else {
-      this.processChunkReferences(path, dataobjects, shape, chunks, dtype);
+      await this.processChunkReferences(path, dataobjects, shape, chunks, dtype);
     }
   }
 
   /**
    * Process a scalar dataset (shape=[]).
    */
-  private processScalarDataset(path: string, dataset: any, dataobjects: any): void {
+  private async processScalarDataset(path: string, dataset: Hdf5Dataset, dataobjects: DataObjects): Promise<void> {
     const rawDtype = dataobjects.dtype;
     const isVlen = Array.isArray(rawDtype) &&
       (rawDtype[0] === "VLEN_STRING" || rawDtype[0] === "VLEN_SEQUENCE");
@@ -680,7 +664,7 @@ export class SingleHdf5ToZarr {
     }
 
     this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
-    this.transferAttrs(dataset, path);
+    await this.transferAttrs(dataset, path);
 
     // Add _ARRAY_DIMENSIONS
     const existingAttrsKey = `${path}/.zattrs`;
@@ -693,7 +677,7 @@ export class SingleHdf5ToZarr {
     // Inline data
     if (isVlen) {
       try {
-        const data = dataobjects.get_data();
+        const data = await dataobjects.get_data();
         const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
         this.refs[`${path}/0`] = encodeJson2(strings, []);
       } catch {
@@ -701,7 +685,7 @@ export class SingleHdf5ToZarr {
       }
     } else {
       try {
-        const data = dataobjects.get_data();
+        const data = await dataobjects.get_data();
         if (data !== null && data !== undefined) {
           const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
           this.refs[`${path}/0`] = inlineBytes(
@@ -717,14 +701,14 @@ export class SingleHdf5ToZarr {
   /**
    * Inline vlen string data using json2 codec encoding.
    */
-  private inlineVlenData(
+  private async inlineVlenData(
     path: string,
-    dataset: any,
+    dataset: Hdf5Dataset,
     shape: number[],
     chunks: number[]
-  ): void {
+  ): Promise<void> {
     try {
-      const data = dataset._dataobjects.get_data();
+      const data = await dataset._dataobjects.get_data();
       if (data === null || data === undefined) return;
 
       const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
@@ -747,15 +731,15 @@ export class SingleHdf5ToZarr {
   /**
    * Inline fixed-length string data.
    */
-  private inlineFixedStringData(
+  private async inlineFixedStringData(
     path: string,
-    dataset: any,
+    dataset: Hdf5Dataset,
     shape: number[],
     chunks: number[],
     rawDtype: string
-  ): void {
+  ): Promise<void> {
     try {
-      const data = dataset._dataobjects.get_data();
+      const data = await dataset._dataobjects.get_data();
       if (data === null || data === undefined) return;
 
       const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
@@ -781,14 +765,14 @@ export class SingleHdf5ToZarr {
    * Process chunk references for non-string datasets.
    * Uses file byte offset references for chunked and contiguous data.
    */
-  private processChunkReferences(
+  private async processChunkReferences(
     path: string,
-    dataobjects: any,
+    dataobjects: DataObjects,
     shape: number[],
     chunks: number[],
     dtype: string
-  ): void {
-    const storageInfo = getStorageInfo(dataobjects, this.fh);
+  ): Promise<void> {
+    const storageInfo = getStorageInfo(dataobjects);
 
     if (storageInfo.layoutClass === 1 && storageInfo.contiguousOffset !== undefined) {
       // Contiguous storage - single chunk reference
@@ -797,8 +781,8 @@ export class SingleHdf5ToZarr {
       const size = storageInfo.contiguousSize!;
 
       if (size <= this.inlineThreshold) {
-        const bytes = new Uint8Array(this.fh, offset, size);
-        this.refs[key] = inlineBytes(new Uint8Array(bytes));
+        const ab = await this.source.fetch(offset, size);
+        this.refs[key] = inlineBytes(new Uint8Array(ab));
       } else {
         this.refs[key] = [this.url, offset, size];
       }
@@ -826,8 +810,8 @@ export class SingleHdf5ToZarr {
         }
       }
 
-      const chunkLocations = getChunkLocations(
-        this.fh,
+      const chunkLocations = await getChunkLocations(
+        this.source,
         storageInfo.chunkAddress!,
         storageInfo.chunkDims!,
         shape,
@@ -842,8 +826,8 @@ export class SingleHdf5ToZarr {
         }
 
         if (size <= this.inlineThreshold) {
-          const bytes = new Uint8Array(this.fh.slice(loc.offset, loc.offset + size));
-          this.refs[key] = inlineBytes(bytes);
+          const ab = await this.source.fetch(loc.offset, size);
+          this.refs[key] = inlineBytes(new Uint8Array(ab));
         } else {
           this.refs[key] = [this.url, loc.offset, size];
         }
@@ -862,15 +846,6 @@ export class SingleHdf5ToZarr {
     const rank = shape.length;
     const dims: string[] = [];
 
-    // Check for DIMENSION_LIST attribute (links to dimension scales)
-    try {
-      const attrs = dataset._dataobjects.get_attributes();
-      // jsfive doesn't have get_dimension_labels / get_attached_scales
-      // Just fallback to phony dims for now
-    } catch {
-      // ignore
-    }
-
     for (let i = 0; i < rank; i++) {
       dims.push(`phony_dim_${i}`);
     }
@@ -880,11 +855,11 @@ export class SingleHdf5ToZarr {
   /**
    * Transfer attributes from an HDF5 object to the Zarr .zattrs.
    */
-  private transferAttrs(h5obj: any, path: string): void {
+  private async transferAttrs(h5obj: any, path: string): Promise<void> {
     const attrs: Record<string, unknown> = {};
     let rawAttrs: Record<string, unknown>;
     try {
-      rawAttrs = h5obj.attrs;
+      rawAttrs = await h5obj.get_attrs();
       if (!rawAttrs || typeof rawAttrs !== "object") return;
     } catch {
       return;
@@ -895,7 +870,7 @@ export class SingleHdf5ToZarr {
     try {
       const dataobjects = h5obj._dataobjects;
       if (dataobjects) {
-        enumAttrs = getAttrDatatypeClasses(dataobjects, this.fh);
+        enumAttrs = getAttrDatatypeClasses(dataobjects);
       }
     } catch {
       // ignore

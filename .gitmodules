@@ -7,3 +7,6 @@
 [submodule "jsfive"]
 	path = jsfive
 	url = https://github.com/usnistgov/jsfive
+[submodule "chunkd"]
+	path = chunkd
+	url = https://github.com/blacha/chunkd
