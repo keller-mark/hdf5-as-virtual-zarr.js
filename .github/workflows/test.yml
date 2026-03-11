@@ -28,7 +28,6 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-
       - run: pnpm run generate-fixtures
-
-      - run: pnpm test
+      - run: pnpm run test
+      - run: pnpm run build
