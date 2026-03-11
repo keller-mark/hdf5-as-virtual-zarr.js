@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import * as h5wasm from "h5wasm/node";
+import { describe, it, expect } from "vitest";
 import { open, get, root as zarrRoot } from "zarrita";
 import ReferenceStore from "@zarrita/storage/ref";
 import { SingleHdf5ToZarr, refSpecToConsolidatedMetadata } from "../src/index.js";
@@ -54,13 +53,10 @@ function loadZarrJsonStore(fixtureName: string) {
  * Generate a reference spec from an h5ad fixture file.
  */
 function generateRefSpec(fixtureName: string) {
-  const file = new h5wasm.File(resolve(fixturesDir, fixtureName), "r");
-  try {
-    const converter = new SingleHdf5ToZarr(file);
-    return converter.translate();
-  } finally {
-    file.close();
-  }
+  const buffer = readFileSync(resolve(fixturesDir, fixtureName));
+  const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  const converter = new SingleHdf5ToZarr(arrayBuffer);
+  return converter.translate();
 }
 
 /**
@@ -76,10 +72,6 @@ function loadKerchunkRefSpec(fixtureName: string) {
 function loadGroundTruthConsolidatedMetadata(fixtureName: string) {
   return JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
 }
-
-beforeAll(async () => {
-  await h5wasm.ready;
-});
 
 describe("SingleHdf5ToZarr", () => {
   describe("reference spec structure", () => {
@@ -667,6 +659,177 @@ describe("SingleHdf5ToZarr", () => {
       const ours = generateRefSpec("mouse_liver.h5ad");
       const kerchunk = loadKerchunkRefSpec("mouse_liver.h5ad.refspec.json");
       expect(ours).toEqual(kerchunk);
+    });
+
+    it("diagnostic: show diff summary", () => {
+      const ours = generateRefSpec("mouse_liver.h5ad");
+      const kerchunk = loadKerchunkRefSpec("mouse_liver.h5ad.refspec.json");
+
+      const oursKeys = new Set(Object.keys(ours.refs));
+      const kerchunkKeys = new Set(Object.keys(kerchunk.refs));
+
+      const missingFromOurs = [...kerchunkKeys].filter(k => !oursKeys.has(k));
+      const extraInOurs = [...oursKeys].filter(k => !kerchunkKeys.has(k));
+      const common = [...kerchunkKeys].filter(k => oursKeys.has(k));
+
+      const metaDiffs: string[] = [];
+      const dataFormatDiffs: string[] = []; // e.g., inline vs file ref
+      const dataValueDiffs: string[] = []; // same format, different value
+
+      for (const key of common) {
+        const oVal = ours.refs[key];
+        const kVal = kerchunk.refs[key];
+        const isMeta = key.endsWith('.zarray') || key.endsWith('.zgroup') || key.endsWith('.zattrs');
+
+        if (JSON.stringify(oVal) === JSON.stringify(kVal)) continue;
+
+        if (isMeta) {
+          metaDiffs.push(`META ${key}:\n  OURS: ${JSON.stringify(oVal).slice(0, 200)}\n  WANT: ${JSON.stringify(kVal).slice(0, 200)}`);
+        } else {
+          const oIsArr = Array.isArray(oVal);
+          const kIsArr = Array.isArray(kVal);
+          const oIsStr = typeof oVal === 'string';
+          const kIsStr = typeof kVal === 'string';
+
+          if (oIsArr && kIsArr) {
+            dataValueDiffs.push(`BOTH_ARR ${key}: ours=${JSON.stringify(oVal)} want=${JSON.stringify(kVal)}`);
+          } else if (oIsStr && kIsStr) {
+            dataValueDiffs.push(`BOTH_STR ${key}: ours_len=${oVal.length} want_len=${kVal.length}`);
+          } else {
+            const oFmt = oIsArr ? `[${oVal}]` : (oIsStr ? `str(len=${oVal.length},prefix=${oVal.slice(0,30)})` : typeof oVal);
+            const kFmt = kIsArr ? `[${kVal}]` : (kIsStr ? `str(len=${kVal.length},prefix=${kVal.slice(0,30)})` : typeof kVal);
+            dataFormatDiffs.push(`FORMAT ${key}: ours=${oFmt} want=${kFmt}`);
+          }
+        }
+      }
+
+      console.log("=== MOUSE_LIVER DIFF SUMMARY ===");
+      console.log(`Total keys: ours=${oursKeys.size} kerchunk=${kerchunkKeys.size}`);
+      console.log(`Missing from ours (${missingFromOurs.length}):`, missingFromOurs);
+      console.log(`Extra in ours (${extraInOurs.length}):`, extraInOurs);
+      console.log(`Meta diffs (${metaDiffs.length}):`);
+      metaDiffs.forEach(d => console.log(d));
+      console.log(`Data format diffs (${dataFormatDiffs.length}):`);
+      dataFormatDiffs.forEach(d => console.log(d));
+      console.log(`Data value diffs (${dataValueDiffs.length}):`);
+      dataValueDiffs.forEach(d => console.log(d));
+      console.log("=== END DIFF SUMMARY ===");
+
+      // This test always passes - it's for diagnostics only
+      expect(true).toBe(true);
+    });
+
+    it("diagnostic: verify kerchunk file references match raw bytes", () => {
+      const kerchunk = loadKerchunkRefSpec("mouse_liver.h5ad.refspec.json");
+      const fileBuf = readFileSync(resolve(fixturesDir, "mouse_liver.h5ad"));
+
+      // Check a few file reference entries from the kerchunk output
+      const fileRefs = Object.entries(kerchunk.refs).filter(
+        ([_k, v]) => Array.isArray(v)
+      ) as [string, [string | null, number, number]][];
+
+      console.log(`=== FILE REFERENCE ANALYSIS (${fileRefs.length} total) ===`);
+
+      // Group by dataset path
+      const byDataset = new Map<string, { key: string; offset: number; size: number }[]>();
+      for (const [key, [_url, offset, size]] of fileRefs) {
+        const dsPath = key.replace(/\/[^/]+$/, "");
+        if (!byDataset.has(dsPath)) byDataset.set(dsPath, []);
+        byDataset.get(dsPath)!.push({ key, offset, size });
+      }
+
+      for (const [dsPath, chunks] of byDataset) {
+        chunks.sort((a, b) => a.offset - b.offset);
+        const first = chunks[0];
+        const last = chunks[chunks.length - 1];
+        const contiguous = chunks.every((c, i) => 
+          i === 0 || c.offset === chunks[i-1].offset + chunks[i-1].size
+        );
+        console.log(`  ${dsPath}: ${chunks.length} chunks, size=${first.size}, offsets=[${first.offset}..${last.offset + last.size}], contiguous=${contiguous}`);
+
+        // Read first few bytes at first chunk offset
+        const preview = fileBuf.slice(first.offset, first.offset + Math.min(16, first.size));
+        console.log(`    first chunk bytes: ${Array.from(preview).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      }
+      console.log("=== END FILE REFERENCE ANALYSIS ===");
+
+      expect(fileRefs.length).toBeGreaterThan(0);
+    });
+
+    it("diagnostic: dataset metadata for datasets that need file refs", () => {
+      const buffer = readFileSync(resolve(fixturesDir, "mouse_liver.h5ad"));
+      const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+      const converter = new SingleHdf5ToZarr(arrayBuffer);
+      const result = converter.translate();
+
+      const datasetsToCheck = [
+        "X/data", "X/indices", "X/indptr",
+        "obs/annotation/codes", "obs/fov_labels/codes",
+        "obsm/spatial",
+        "uns/spatialdata_attrs/instance_key",
+        "uns/spatialdata_attrs/region",
+        "uns/spatialdata_attrs/region_key",
+      ];
+
+      console.log("=== DATASET METADATA ===");
+      for (const path of datasetsToCheck) {
+        const zarrayKey = `${path}/.zarray`;
+        if (zarrayKey in result.refs) {
+          const zarray = JSON.parse(result.refs[zarrayKey] as string);
+          console.log(`  ${path}:`);
+          console.log(`    shape=${JSON.stringify(zarray.shape)}, chunks=${JSON.stringify(zarray.chunks)}`);
+          console.log(`    dtype=${zarray.dtype}`);
+          console.log(`    compressor=${JSON.stringify(zarray.compressor)}`);
+        } else {
+          console.log(`  ${path}: NOT FOUND`);
+        }
+      }
+      console.log("=== END DATASET METADATA ===");
+      expect(true).toBe(true);
+    });
+
+    it("diagnostic: HDF5 superblock info", () => {
+      const buf = readFileSync(resolve(fixturesDir, "mouse_liver.h5ad"));
+      const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+      const signature = buf.slice(0, 8).toString("hex");
+      const sbVersion = buf[8];
+      const sizeOfOffsets = buf[13];
+      const sizeOfLengths = buf[14];
+
+      console.log("=== HDF5 SUPERBLOCK ===");
+      console.log(`  Signature: ${signature}`);
+      console.log(`  Superblock version: ${sbVersion}`);
+      console.log(`  Size of offsets: ${sizeOfOffsets}`);
+      console.log(`  Size of lengths: ${sizeOfLengths}`);
+      console.log(`  File size: ${buf.length}`);
+
+      if (sbVersion === 0 || sbVersion === 1) {
+        const groupLeafNodeK = dv.getUint16(16, true);
+        const groupInternalNodeK = dv.getUint16(18, true);
+        const baseAddress = Number(dv.getBigUint64(24, true));
+        const freeSpaceAddress = Number(dv.getBigUint64(32, true));
+        const eofAddress = Number(dv.getBigUint64(40, true));
+        const driverInfoAddress = Number(dv.getBigUint64(48, true));
+
+        console.log(`  Group leaf node K: ${groupLeafNodeK}`);
+        console.log(`  Group internal node K: ${groupInternalNodeK}`);
+        console.log(`  Base address: ${baseAddress}`);
+        console.log(`  Free-space address: ${freeSpaceAddress}`);
+        console.log(`  EOF address: ${eofAddress}`);
+        console.log(`  Driver info address: ${driverInfoAddress}`);
+
+        // Root group symbol table entry
+        const rootLinkNameOffset = Number(dv.getBigUint64(56, true));
+        const rootObjHeaderAddress = Number(dv.getBigUint64(64, true));
+        const rootCacheType = dv.getUint32(72, true);
+        console.log(`  Root group link name offset: ${rootLinkNameOffset}`);
+        console.log(`  Root group obj header address: ${rootObjHeaderAddress}`);
+        console.log(`  Root group cache type: ${rootCacheType}`);
+      }
+
+      console.log("=== END HDF5 SUPERBLOCK ===");
+      expect(signature).toBe("894844460d0a1a0a");
     });
   });
 

@@ -1,4 +1,8 @@
-import type { Group, Dataset, Metadata, Filter } from "h5wasm";
+// @ts-nocheck - jsfive is plain JS without type declarations
+import { File as Hdf5File, Dataset as Hdf5Dataset, Group as Hdf5Group } from "../jsfive/esm/high-level.js";
+import { DataObjects } from "../jsfive/esm/dataobjects.js";
+import { BTreeV1RawDataChunks } from "../jsfive/esm/btree.js";
+import { struct } from "../jsfive/esm/core.js";
 
 /**
  * Hidden HDF5 attributes that should not be transferred to Zarr.
@@ -70,78 +74,69 @@ export interface SingleHdf5ToZarrOptions {
 }
 
 /**
- * Convert HDF5 dtype metadata to Zarr dtype string.
+ * Convert jsfive dtype string to Zarr-compatible dtype string.
+ * jsfive produces numpy-style strings like "<f4", "<i4", etc.
+ * For single-byte types, normalize to use "|" prefix.
  */
-function metadataToZarrDtype(metadata: Metadata): string {
-  const { type, size, littleEndian, signed, vlen } = metadata;
-  const endian = littleEndian ? "<" : ">";
-
-  // String types
-  // type 3 = H5T_STRING
-  if (type === 3) {
-    if (vlen) {
-      return "|O";
-    }
-    return `|S${size}`;
+function jsfiveDtypeToZarr(dtype: string | string[]): string {
+  if (Array.isArray(dtype)) {
+    const dtypeClass = dtype[0];
+    if (dtypeClass === "VLEN_STRING") return "|O";
+    if (dtypeClass === "VLEN_SEQUENCE") return "|O";
+    if (dtypeClass === "REFERENCE") return "|O";
+    return "|O";
   }
 
-  // Integer types
-  // type 0 = H5T_INTEGER
-  if (type === 0) {
-    if (size === 1) {
-      // Single-byte integers use "|" (byte order not applicable for 1-byte types)
-      return signed ? `|i${size}` : `|u${size}`;
-    }
-    return signed ? `${endian}i${size}` : `${endian}u${size}`;
+  // Fixed-length string: "S123" -> "|S123"
+  if (/^S\d+/.test(dtype)) {
+    return "|" + dtype;
   }
 
-  // Float types
-  // type 1 = H5T_FLOAT
-  if (type === 1) {
-    return `${endian}f${size}`;
+  // Parse the dtype parts
+  const match = dtype.match(/^([<>|])([iufS])(\d+)$/);
+  if (!match) return dtype;
+
+  const [, endian, typeChar, sizeStr] = match;
+  const size = parseInt(sizeStr, 10);
+
+  // Single-byte integers use "|" prefix
+  if ((typeChar === "i" || typeChar === "u") && size === 1) {
+    return `|${typeChar}${size}`;
   }
 
-  // Enum types - treat as the base type
-  // type 8 = H5T_ENUM
-  if (type === 8) {
-    if (size === 1) {
-      return signed ? `|i${size}` : `|u${size}`;
-    }
-    return signed ? `${endian}i${size}` : `${endian}u${size}`;
-  }
-
-  // Compound types
-  // type 6 = H5T_COMPOUND
-  if (type === 6) {
-    return `|V${size}`;
-  }
-
-  return `${endian}V${size}`;
+  return dtype;
 }
 
 /**
- * Convert h5wasm filter info to Zarr compressor/filters metadata.
+ * Convert jsfive filter pipeline to Zarr compressor/filters metadata.
  */
-function decodeFilters(
-  filters: Filter[]
+function decodeFilterPipeline(
+  filterPipeline: Map<string, unknown>[] | null
 ): { compressor: Record<string, unknown> | null; zarrFilters: Record<string, unknown>[] | null } {
   const zarrFilters: Record<string, unknown>[] = [];
   let compressor: Record<string, unknown> | null = null;
 
-  for (const filter of filters) {
-    if (filter.id === 1) {
+  if (!filterPipeline) {
+    return { compressor, zarrFilters: null };
+  }
+
+  for (const filterInfo of filterPipeline) {
+    const filterId = filterInfo.get("filter_id") as number;
+    const clientData = filterInfo.get("client_data") as number[] | undefined;
+
+    if (filterId === 1) {
       // H5Z_FILTER_DEFLATE (gzip)
       compressor = {
         id: "zlib",
-        level: filter.cd_values?.[0] ?? 4,
+        level: clientData?.[0] ?? 4,
       };
-    } else if (filter.id === 2) {
+    } else if (filterId === 2) {
       // H5Z_FILTER_SHUFFLE
       zarrFilters.push({
         id: "shuffle",
-        elementsize: filter.cd_values?.[0] ?? 4,
+        elementsize: clientData?.[0] ?? 4,
       });
-    } else if (filter.id === 32001) {
+    } else if (filterId === 32001) {
       // Blosc
       const blosccnames = [
         "blosclz",
@@ -151,7 +146,7 @@ function decodeFilters(
         "zlib",
         "zstd",
       ];
-      const cd = filter.cd_values || [];
+      const cd = clientData || [];
       compressor = {
         id: "blosc",
         cname: blosccnames[cd[4]] || "lz4",
@@ -159,18 +154,16 @@ function decodeFilters(
         shuffle: cd[5] || 0,
         blocksize: cd[2] || 0,
       };
-    } else if (filter.id === 32015) {
+    } else if (filterId === 32015) {
       // Zstd
       compressor = {
         id: "zstd",
-        level: filter.cd_values?.[0] ?? 3,
+        level: clientData?.[0] ?? 3,
       };
-    } else if (filter.id === 3) {
+    } else if (filterId === 3) {
       // H5Z_FILTER_FLETCHER32 - checksum, not a compressor
-      // Ignore for Zarr
-    } else if (filter.id === 4) {
+    } else if (filterId === 4) {
       // H5Z_FILTER_SZIP
-      // Not well supported in numcodecs/Zarr
     }
   }
 
@@ -195,7 +188,6 @@ function encodeFillValue(
     if (Number.isNaN(fillValue)) return "NaN";
     if (fillValue === Infinity) return "Infinity";
     if (fillValue === -Infinity) return "-Infinity";
-    // For integer types (e.g., <i4, |u1), ensure we return an integer
     if (dtype.match(/[iu]\d/)) {
       return Math.round(fillValue);
     }
@@ -219,7 +211,6 @@ function encodeFillValue(
  * - Otherwise, encode as "base64:" + base64
  */
 function inlineBytes(data: Uint8Array): string {
-  // Check if all bytes are ASCII-safe (< 128)
   let asciiSafe = true;
   for (let i = 0; i < data.length; i++) {
     if (data[i] >= 128) {
@@ -229,7 +220,6 @@ function inlineBytes(data: Uint8Array): string {
   }
 
   if (asciiSafe) {
-    // Encode as raw character string (each byte → char code)
     let result = "";
     for (let i = 0; i < data.length; i++) {
       result += String.fromCharCode(data[i]);
@@ -237,7 +227,6 @@ function inlineBytes(data: Uint8Array): string {
     return result;
   }
 
-  // Fall back to base64
   if (typeof Buffer !== "undefined") {
     return "base64:" + Buffer.from(data).toString("base64");
   }
@@ -250,9 +239,6 @@ function inlineBytes(data: Uint8Array): string {
 
 /**
  * Encode an array of strings in the json2 codec format used by kerchunk.
- *
- * Format: ["str1", "str2", ..., "|O", [shape]]
- * This matches the format expected by kerchunk/numcodecs json2 codec.
  */
 function encodeJson2(strings: string[], shape: number[]): string {
   const parts: unknown[] = [...strings, "|O", shape];
@@ -261,7 +247,6 @@ function encodeJson2(strings: string[], shape: number[]): string {
 
 /**
  * The json2 filter metadata used by kerchunk for vlen string data.
- * Matches Python's json.JSONEncoder default parameters.
  */
 const JSON2_FILTER = {
   allow_nan: true,
@@ -278,7 +263,6 @@ const JSON2_FILTER = {
 
 /**
  * JSON.stringify with keys sorted alphabetically at all levels.
- * Matches Python's json.dumps(obj, sort_keys=True) behavior.
  */
 function jsonStringifySorted(obj: unknown): string {
   return JSON.stringify(obj, (_key, value) => {
@@ -295,12 +279,9 @@ function jsonStringifySorted(obj: unknown): string {
 
 /**
  * Serialize a ZarrArrayMeta to JSON, matching kerchunk's output.
- * For float dtypes, ensures fill_value is serialized with a decimal point
- * (e.g., 0.0 instead of 0) to match Python's json.dumps behavior.
  */
 function serializeZarrayMeta(meta: ZarrArrayMeta): string {
   let json = jsonStringifySorted(meta);
-  // For float dtypes, ensure fill_value is serialized as a float (e.g., 0.0 not 0)
   if (
     /[<>]f\d/.test(meta.dtype) &&
     typeof meta.fill_value === "number" &&
@@ -313,39 +294,236 @@ function serializeZarrayMeta(meta: ZarrArrayMeta): string {
   return json;
 }
 
+const UNDEFINED_ADDRESS = 0xffffffffffff; // 2^48-1 (jsfive uses Number from 8-byte LE max)
+
+/**
+ * Get storage info for a dataset's DataObjects, returning chunk
+ * byte offsets and sizes for file references.
+ *
+ * Based on jsfive's DataObjects._get_chunk_params and _get_data_message_properties.
+ */
+function getStorageInfo(dataobjects: any, fh: ArrayBuffer): {
+  layoutClass: number;
+  contiguousOffset?: number;
+  contiguousSize?: number;
+  chunkAddress?: number;
+  chunkDims?: number;
+  chunkShape?: number[];
+} {
+  const DATA_STORAGE_MSG_TYPE = 0x0008;
+  const msg = dataobjects.find_msg_type(DATA_STORAGE_MSG_TYPE)[0];
+  if (!msg) return { layoutClass: -1 };
+
+  const msgOffset = msg.get("offset_to_message");
+  const [version, arg1, arg2] = struct.unpack_from("<BBB", fh, msgOffset);
+
+  let dims: number, layoutClass: number, propertyOffset: number;
+
+  if (version === 1 || version === 2) {
+    dims = arg1;
+    layoutClass = arg2;
+    propertyOffset = msgOffset + struct.calcsize("<BBB") + struct.calcsize("<BI");
+  } else if (version === 3 || version === 4) {
+    layoutClass = arg1;
+    propertyOffset = msgOffset + struct.calcsize("<BB");
+    dims = 0; // will be read below for chunked
+  } else {
+    return { layoutClass: -1 };
+  }
+
+  if (layoutClass === 1) {
+    // Contiguous storage
+    const dataOffset = struct.unpack_from("<Q", fh, propertyOffset)[0];
+    if (dataOffset === UNDEFINED_ADDRESS || dataOffset >= Number.MAX_SAFE_INTEGER * 0.99) {
+      return { layoutClass: 1 };
+    }
+    // For version 3, size follows the address
+    let size: number;
+    if (version === 3 || version === 4) {
+      size = struct.unpack_from("<Q", fh, propertyOffset + 8)[0];
+    } else {
+      // For v1/v2, compute from shape * dtype size
+      const shape = dataobjects.shape;
+      const dtype = dataobjects.dtype;
+      let itemSize = 0;
+      if (typeof dtype === "string") {
+        const m = dtype.match(/\d+$/);
+        itemSize = m ? parseInt(m[0], 10) : 1;
+      } else {
+        itemSize = 8; // reference size
+      }
+      size = shape.reduce((a: number, b: number) => a * b, 1) * itemSize;
+    }
+    return { layoutClass: 1, contiguousOffset: dataOffset, contiguousSize: size };
+  } else if (layoutClass === 2) {
+    // Chunked storage
+    let address: number, dataOffsetForChunks: number;
+    if (version === 1 || version === 2) {
+      address = struct.unpack_from("<Q", fh, propertyOffset)[0];
+      dataOffsetForChunks = propertyOffset + struct.calcsize("<Q");
+    } else {
+      // version 3
+      const result = struct.unpack_from("<BQ", fh, propertyOffset);
+      dims = result[0];
+      address = result[1];
+      dataOffsetForChunks = propertyOffset + struct.calcsize("<BQ");
+    }
+
+    if (address === UNDEFINED_ADDRESS || address >= Number.MAX_SAFE_INTEGER * 0.99) {
+      return { layoutClass: 2 };
+    }
+
+    const fmt = "<" + (dims - 1).toFixed() + "I";
+    const chunkShape = struct.unpack_from(fmt, fh, dataOffsetForChunks);
+
+    return {
+      layoutClass: 2,
+      chunkAddress: address,
+      chunkDims: dims,
+      chunkShape: Array.isArray(chunkShape) ? chunkShape : [chunkShape],
+    };
+  }
+
+  return { layoutClass: layoutClass };
+}
+
+/**
+ * Get chunk locations from a B-tree for chunked datasets.
+ * Returns an array of { chunkIndex, offset, size } objects.
+ */
+function getChunkLocations(
+  fh: ArrayBuffer,
+  btreeAddress: number,
+  chunkDims: number,
+  dataShape: number[],
+  chunkShape: number[]
+): Array<{ chunkIndex: number[]; offset: number; size: number }> {
+  const btree = new BTreeV1RawDataChunks(fh, btreeAddress, chunkDims);
+  const results: Array<{ chunkIndex: number[]; offset: number; size: number }> = [];
+
+  const leafNodes = btree.all_nodes.get(0);
+  if (!leafNodes) return results;
+
+  for (const node of leafNodes) {
+    const nodeKeys = node.get("keys");
+    const nodeAddresses = node.get("addresses");
+    const nkeys = nodeKeys.length;
+
+    for (let ik = 0; ik < nkeys; ik++) {
+      const nodeKey = nodeKeys[ik];
+      const addr = nodeAddresses[ik];
+      const chunkOffset = nodeKey.get("chunk_offset");
+      const chunkSize = nodeKey.get("chunk_size");
+
+      // Convert chunk_offset (element offsets) to chunk indices
+      const chunkIndex = chunkOffset.slice(0, -1).map((co: number, d: number) =>
+        Math.floor(co / chunkShape[d])
+      );
+
+      // For 1D data, chunk_offset has 2 entries (dim + trailing 0)
+      // chunkIndex should match the number of data dimensions
+      while (chunkIndex.length < dataShape.length) {
+        chunkIndex.push(0);
+      }
+      while (chunkIndex.length > dataShape.length) {
+        chunkIndex.pop();
+      }
+
+      results.push({
+        chunkIndex,
+        offset: addr,
+        size: chunkSize,
+      });
+    }
+  }
+
+  return results;
+}
+
+const ATTRIBUTE_MSG_TYPE = 0x000C;
+const DATATYPE_ENUMERATED = 8;
+
+/**
+ * Get the raw HDF5 datatype class for each attribute in a DataObjects instance.
+ * Returns a Map from attribute name to datatype class number.
+ * Used to detect enum (boolean) attributes.
+ */
+function getAttrDatatypeClasses(dataobjects: any, fh: ArrayBuffer): Map<string, number> {
+  const result = new Map<string, number>();
+  const attrMsgs = dataobjects.find_msg_type(ATTRIBUTE_MSG_TYPE);
+
+  for (const msg of attrMsgs) {
+    let offset = msg.get("offset_to_message");
+    const version = struct.unpack_from("<B", fh, offset)[0];
+
+    let nameSize: number;
+    let paddingMultiple: number;
+
+    if (version === 1) {
+      // ATTR_MSG_HEADER_V1: version(B) + reserved(B) + name_size(H) + datatype_size(H) + dataspace_size(H) = 8 bytes
+      nameSize = struct.unpack_from("<H", fh, offset + 2)[0];
+      paddingMultiple = 8;
+      offset += 8; // skip header
+    } else if (version === 3) {
+      // ATTR_MSG_HEADER_V3: version(B) + flags(B) + name_size(H) + datatype_size(H) + dataspace_size(H) + encoding(B) = 9 bytes
+      nameSize = struct.unpack_from("<H", fh, offset + 2)[0];
+      paddingMultiple = 1;
+      offset += 9; // skip header
+    } else {
+      continue;
+    }
+
+    // Read attribute name
+    const nameBytes = struct.unpack_from("<" + nameSize.toFixed() + "s", fh, offset)[0];
+    const name = nameBytes.replace(/\x00$/, "");
+
+    // Skip past padded name
+    const paddedNameSize = paddingMultiple > 1
+      ? Math.ceil(nameSize / paddingMultiple) * paddingMultiple
+      : nameSize;
+    offset += paddedNameSize;
+
+    // Read raw datatype class from first byte of datatype message
+    const classAndVersion = struct.unpack_from("<B", fh, offset)[0];
+    const datatypeClass = classAndVersion & 0x0f;
+
+    result.set(name, datatypeClass);
+  }
+
+  return result;
+}
+
 /**
  * Translate the content of one HDF5 file into Zarr metadata
  * following the Zarr References Specification v1.
  *
  * Ported from kerchunk's SingleHdf5ToZarr Python class.
- *
- * @see https://github.com/fsspec/kerchunk/blob/main/kerchunk/hdf.py
+ * Uses jsfive for HDF5 parsing from an ArrayBuffer.
  */
 export class SingleHdf5ToZarr {
-  private h5File: InstanceType<typeof import("h5wasm").File>;
+  private h5File: any;
+  private fh: ArrayBuffer;
   private url: string | null;
   private inlineThreshold: number;
   private refs: Record<string, string | [string | null, number, number]>;
 
   /**
-   * @param h5File - An opened h5wasm File object.
+   * @param buffer - The full HDF5 file as an ArrayBuffer.
    * @param options - Configuration options.
    */
   constructor(
-    h5File: InstanceType<typeof import("h5wasm").File>,
+    buffer: ArrayBuffer,
     options: SingleHdf5ToZarrOptions = {}
   ) {
-    this.h5File = h5File;
+    this.fh = buffer;
+    this.h5File = new Hdf5File(buffer);
     this.url = options.url ?? null;
-    this.inlineThreshold = options.inlineThreshold ?? 500;
+    this.inlineThreshold = options.inlineThreshold ?? 300;
     this.refs = {};
   }
 
   /**
    * Translate the HDF5 file content into a Zarr reference spec.
-   *
-   * No large data is copied; only metadata and small inline data
-   * are included in the output.
    */
   translate(): ReferenceSpec {
     this.refs = {};
@@ -354,18 +532,8 @@ export class SingleHdf5ToZarr {
     this.refs[".zgroup"] = jsonStringifySorted({ zarr_format: 2 } as ZarrGroupMeta);
     this.transferAttrs(this.h5File, "");
 
-    // Walk all paths in the file
-    const paths = this.h5File.paths();
-    for (const path of paths) {
-      const obj = this.h5File.get(path);
-      if (!obj) continue;
-
-      if ("keys" in obj && typeof (obj as Group).keys === "function") {
-        this.processGroup(path, obj as Group);
-      } else if ("metadata" in obj && "shape" in (obj as Dataset)) {
-        this.processDataset(path, obj as Dataset);
-      }
-    }
+    // Walk all items recursively
+    this.walkGroup(this.h5File, "");
 
     return {
       version: 1,
@@ -374,9 +542,33 @@ export class SingleHdf5ToZarr {
   }
 
   /**
+   * Recursively walk an HDF5 group, processing all children.
+   */
+  private walkGroup(group: any, parentPath: string): void {
+    const keys = group.keys;
+    for (const key of keys) {
+      const childPath = parentPath ? `${parentPath}/${key}` : key;
+      let child: any;
+      try {
+        child = group.get(key);
+      } catch {
+        continue;
+      }
+      if (!child) continue;
+
+      if (child instanceof Hdf5Dataset) {
+        this.processDataset(childPath, child);
+      } else if (child instanceof Hdf5Group) {
+        this.processGroup(childPath, child);
+        this.walkGroup(child, childPath);
+      }
+    }
+  }
+
+  /**
    * Process an HDF5 group into Zarr group metadata.
    */
-  private processGroup(path: string, group: Group): void {
+  private processGroup(path: string, group: any): void {
     this.refs[`${path}/.zgroup`] = jsonStringifySorted({
       zarr_format: 2,
     } as ZarrGroupMeta);
@@ -386,16 +578,24 @@ export class SingleHdf5ToZarr {
   /**
    * Process an HDF5 dataset into Zarr array metadata and chunk references.
    */
-  private processDataset(path: string, dataset: Dataset): void {
-    const metadata = dataset.metadata;
-    const shape = metadata.shape;
-    if (!shape) return; // null/scalar dataset with no shape
+  private processDataset(path: string, dataset: any): void {
+    const dataobjects = dataset._dataobjects;
+    const shape = dataobjects.shape;
+    if (!shape || shape.length === 0) {
+      // Scalar dataset
+      this.processScalarDataset(path, dataset, dataobjects);
+      return;
+    }
 
-    const dtype = metadataToZarrDtype(metadata);
-    const chunks = metadata.chunks || shape;
-    const filters = dataset.filters;
+    const rawDtype = dataobjects.dtype;
+    const isVlen = Array.isArray(rawDtype) &&
+      (rawDtype[0] === "VLEN_STRING" || rawDtype[0] === "VLEN_SEQUENCE");
+    const isFixedString = typeof rawDtype === "string" && /^S\d+/.test(rawDtype);
 
-    const { compressor, zarrFilters } = decodeFilters(filters);
+    const dtype = jsfiveDtypeToZarr(rawDtype);
+    const chunks = dataobjects.chunks || [...shape];
+    const filterPipeline = dataobjects.filter_pipeline;
+    const { compressor, zarrFilters } = decodeFilterPipeline(filterPipeline);
 
     // Determine fill value
     let fillValue: unknown = null;
@@ -407,16 +607,6 @@ export class SingleHdf5ToZarr {
       fillValue = 0.0;
     } else {
       fillValue = 0;
-    }
-
-    // Check for _FillValue attribute
-    try {
-      const fv = dataset.get_attribute("_FillValue", true);
-      if (fv !== null && fv !== undefined) {
-        fillValue = fv;
-      }
-    } catch {
-      // No _FillValue attribute
     }
 
     fillValue = encodeFillValue(fillValue, dtype);
@@ -437,8 +627,8 @@ export class SingleHdf5ToZarr {
     // Transfer attributes
     this.transferAttrs(dataset, path);
 
-    // Add _ARRAY_DIMENSIONS attribute
-    const dims = this.getArrayDims(dataset, path);
+    // Add _ARRAY_DIMENSIONS
+    const dims = this.getArrayDims(dataset, path, shape);
     const existingAttrsKey = `${path}/.zattrs`;
     const existingAttrs = this.refs[existingAttrsKey]
       ? JSON.parse(this.refs[existingAttrsKey] as string)
@@ -446,119 +636,106 @@ export class SingleHdf5ToZarr {
     existingAttrs["_ARRAY_DIMENSIONS"] = dims;
     this.refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
 
-    // Process data chunks
-    this.processChunks(path, dataset, metadata, chunks);
-  }
-
-  /**
-   * Get dimension names for a dataset.
-   */
-  private getArrayDims(dataset: Dataset, path: string): string[] {
-    const shape = dataset.metadata.shape;
-    if (!shape || shape.length === 0) return [];
-
-    const dims: string[] = [];
-    const rank = shape.length;
-
-    // Try to get dimension labels
-    try {
-      const labels = dataset.get_dimension_labels();
-      if (labels && labels.length === rank) {
-        for (let i = 0; i < rank; i++) {
-          if (labels[i]) {
-            dims.push(labels[i]!);
-          } else {
-            dims.push(`phony_dim_${i}`);
-          }
-        }
-        return dims;
-      }
-    } catch {
-      // dimension labels not available
-    }
-
-    // Try to get attached dimension scales
-    try {
-      for (let i = 0; i < rank; i++) {
-        const scales = dataset.get_attached_scales(i);
-        if (scales && scales.length === 1) {
-          // Remove leading slash from the scale path
-          dims.push(scales[0].replace(/^\//, ""));
-        } else {
-          dims.push(`phony_dim_${i}`);
-        }
-      }
-      return dims;
-    } catch {
-      // Dimension scales not available
-    }
-
-    // Fall back to phony dimension names
-    for (let i = 0; i < rank; i++) {
-      dims.push(`phony_dim_${i}`);
-    }
-    return dims;
-  }
-
-  /**
-   * Process the data chunks for a dataset.
-   * For small data: inline as base64.
-   * For larger data: try to determine file offset and size, else inline.
-   */
-  private processChunks(
-    path: string,
-    dataset: Dataset,
-    metadata: Metadata,
-    chunks: number[]
-  ): void {
-    const shape = metadata.shape;
-    if (!shape || shape.length === 0) return;
-
-    // For vlen strings, always read and inline the data
-    if (metadata.vlen || metadata.type === 3 /* H5T_STRING */) {
+    // Process data: vlen strings get inlined, others get file references
+    if (isVlen) {
       this.inlineVlenData(path, dataset, shape, chunks);
-      return;
+    } else if (isFixedString) {
+      this.inlineFixedStringData(path, dataset, shape, chunks, rawDtype);
+    } else {
+      this.processChunkReferences(path, dataobjects, shape, chunks, dtype);
     }
-
-    // Calculate total size
-    const totalElements = shape.reduce((a, b) => a * b, 1);
-    const totalBytes = totalElements * metadata.size;
-
-    // For small datasets or when inline threshold allows, inline the data
-    if (totalBytes <= this.inlineThreshold || totalBytes === 0) {
-      this.inlineDataset(path, dataset, shape, chunks, metadata);
-      return;
-    }
-
-    // For chunked datasets, calculate chunk indices and create references.
-    // Since h5wasm doesn't expose chunk offset/size API directly,
-    // we read and inline each chunk.
-    this.inlineChunkedDataset(path, dataset, shape, chunks, metadata);
   }
 
   /**
-   * Inline vlen string data.
+   * Process a scalar dataset (shape=[]).
+   */
+  private processScalarDataset(path: string, dataset: any, dataobjects: any): void {
+    const rawDtype = dataobjects.dtype;
+    const isVlen = Array.isArray(rawDtype) &&
+      (rawDtype[0] === "VLEN_STRING" || rawDtype[0] === "VLEN_SEQUENCE");
+    const dtype = jsfiveDtypeToZarr(rawDtype);
+
+    let fillValue: unknown = null;
+    if (dtype === "|O") fillValue = null;
+    else if (/[<>|]f\d/.test(dtype)) fillValue = 0.0;
+    else fillValue = 0;
+
+    fillValue = encodeFillValue(fillValue, dtype);
+
+    const zarrMeta: ZarrArrayMeta = {
+      zarr_format: 2,
+      shape: [],
+      chunks: [],
+      dtype,
+      compressor: null,
+      fill_value: fillValue,
+      order: "C",
+      filters: null,
+    };
+
+    if (isVlen) {
+      zarrMeta.dtype = "|O";
+      zarrMeta.fill_value = null;
+      zarrMeta.filters = [JSON2_FILTER];
+    }
+
+    this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
+    this.transferAttrs(dataset, path);
+
+    // Add _ARRAY_DIMENSIONS
+    const existingAttrsKey = `${path}/.zattrs`;
+    const existingAttrs = this.refs[existingAttrsKey]
+      ? JSON.parse(this.refs[existingAttrsKey] as string)
+      : {};
+    existingAttrs["_ARRAY_DIMENSIONS"] = [];
+    this.refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
+
+    // Inline data
+    if (isVlen) {
+      try {
+        const data = dataobjects.get_data();
+        const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
+        this.refs[`${path}/0`] = encodeJson2(strings, []);
+      } catch {
+        // Cannot read scalar vlen data
+      }
+    } else {
+      try {
+        const data = dataobjects.get_data();
+        if (data !== null && data !== undefined) {
+          const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
+          this.refs[`${path}/0`] = inlineBytes(
+            new Uint8Array(new Float64Array(strings.map(Number)).buffer)
+          );
+        }
+      } catch {
+        // Cannot read scalar data
+      }
+    }
+  }
+
+  /**
+   * Inline vlen string data using json2 codec encoding.
    */
   private inlineVlenData(
     path: string,
-    dataset: Dataset,
+    dataset: any,
     shape: number[],
     chunks: number[]
   ): void {
     try {
-      const data = dataset.json_value;
+      const data = dataset._dataobjects.get_data();
       if (data === null || data === undefined) return;
 
-      // Get string array from the data
       const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
 
-      // Encode using json2 codec format (matching kerchunk)
       const key = `${path}/${chunks.map(() => "0").join(".")}`;
       this.refs[key] = encodeJson2(strings, shape);
 
-      // Update .zarray to use object dtype and json2 filter
+      // Update .zarray for vlen string codec
       const zarrMeta = JSON.parse(this.refs[`${path}/.zarray`] as string);
       zarrMeta.dtype = "|O";
+      zarrMeta.fill_value = null;
       zarrMeta.filters = [JSON2_FILTER];
       zarrMeta.compressor = null;
       this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
@@ -568,137 +745,191 @@ export class SingleHdf5ToZarr {
   }
 
   /**
-   * Inline a small dataset entirely.
+   * Inline fixed-length string data.
    */
-  private inlineDataset(
+  private inlineFixedStringData(
     path: string,
-    dataset: Dataset,
+    dataset: any,
     shape: number[],
     chunks: number[],
-    metadata: Metadata
+    rawDtype: string
   ): void {
     try {
-      const value = dataset.value;
-      if (value === null || value === undefined) return;
+      const data = dataset._dataobjects.get_data();
+      if (data === null || data === undefined) return;
 
-      // Convert typed array to bytes
-      if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-        const bytes = new Uint8Array(
-          (value as unknown as { buffer: ArrayBuffer }).buffer,
-          (value as unknown as { byteOffset: number }).byteOffset,
-          (value as unknown as { byteLength: number }).byteLength
-        );
-        const key = `${path}/${chunks.map(() => "0").join(".")}`;
-        this.refs[key] = inlineBytes(bytes);
+      const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
+      const key = `${path}/${chunks.map(() => "0").join(".")}`;
+
+      // For fixed-length strings, inline the raw bytes
+      const sizeMatch = rawDtype.match(/S(\d+)/);
+      const strSize = sizeMatch ? parseInt(sizeMatch[1], 10) : 1;
+      const totalSize = strings.length * strSize;
+      const buf = new Uint8Array(totalSize);
+      const encoder = new TextEncoder();
+      for (let i = 0; i < strings.length; i++) {
+        const encoded = encoder.encode(strings[i]);
+        buf.set(encoded.subarray(0, strSize), i * strSize);
       }
+      this.refs[key] = inlineBytes(buf);
     } catch {
-      // Cannot read dataset
+      // Cannot read fixed string data
     }
   }
 
   /**
-   * Read and inline a chunked dataset, chunk by chunk.
+   * Process chunk references for non-string datasets.
+   * Uses file byte offset references for chunked and contiguous data.
    */
-  private inlineChunkedDataset(
+  private processChunkReferences(
     path: string,
-    dataset: Dataset,
+    dataobjects: any,
     shape: number[],
     chunks: number[],
-    metadata: Metadata
+    dtype: string
   ): void {
-    // Calculate the number of chunks along each dimension
-    const nChunks = shape.map((s, i) => Math.ceil(s / chunks[i]));
+    const storageInfo = getStorageInfo(dataobjects, this.fh);
 
-    // Total number of chunks
-    const totalChunks = nChunks.reduce((a, b) => a * b, 1);
+    if (storageInfo.layoutClass === 1 && storageInfo.contiguousOffset !== undefined) {
+      // Contiguous storage - single chunk reference
+      const key = `${path}/${shape.map(() => "0").join(".")}`;
+      const offset = storageInfo.contiguousOffset!;
+      const size = storageInfo.contiguousSize!;
 
-    // Iterate through all chunk indices
-    for (let chunkLinear = 0; chunkLinear < totalChunks; chunkLinear++) {
-      // Convert linear index to multi-dimensional chunk index
-      const chunkIndex: number[] = [];
-      let remaining = chunkLinear;
-      for (let d = nChunks.length - 1; d >= 0; d--) {
-        chunkIndex.unshift(remaining % nChunks[d]);
-        remaining = Math.floor(remaining / nChunks[d]);
+      if (size <= this.inlineThreshold) {
+        const bytes = new Uint8Array(this.fh, offset, size);
+        this.refs[key] = inlineBytes(new Uint8Array(bytes));
+      } else {
+        this.refs[key] = [this.url, offset, size];
       }
+    } else if (storageInfo.layoutClass === 2 && storageInfo.chunkAddress !== undefined) {
+      // Chunked storage - get chunk locations from B-tree
+      const filterPipeline = dataobjects.filter_pipeline;
+      const hasFilters = filterPipeline && filterPipeline.length > 0;
 
-      // Calculate the slice ranges for this chunk
-      const ranges: [number, number][] = chunkIndex.map((ci, d) => {
-        const start = ci * chunks[d];
-        const end = Math.min(start + chunks[d], shape[d]);
-        return [start, end];
-      });
+      // Item size from dtype
+      let itemSize = 1;
+      const sizeMatch = dtype.match(/\d+$/);
+      if (sizeMatch) itemSize = parseInt(sizeMatch[0], 10);
 
-      try {
-        // Read the chunk data using h5wasm slice
-        const sliceRanges = ranges.map(([start, end]) => [start, end] as [number, number]);
-        const data = dataset.slice(sliceRanges);
+      const chunkElements = chunks.reduce((a, b) => a * b, 1);
+      const uncompressedChunkBytes = chunkElements * itemSize;
 
-        if (data === null || data === undefined) continue;
-
-        const key = `${path}/${chunkIndex.join(".")}`;
-
-        if (ArrayBuffer.isView(data) && !(data instanceof DataView)) {
-          const actualSize = ranges.reduce((acc, [s, e]) => acc * (e - s), 1);
-          const expectedSize = chunks.reduce((a, b) => a * b, 1);
-
-          let bytes: Uint8Array;
-          if (actualSize < expectedSize) {
-            // Edge chunk: need to pad to full chunk size
-            const fullBuffer = new ArrayBuffer(expectedSize * metadata.size);
-            const fullView = new Uint8Array(fullBuffer);
-            // Zero-fill is default for ArrayBuffer
-            const sourceBytes = new Uint8Array(
-              (data as unknown as { buffer: ArrayBuffer }).buffer,
-              (data as unknown as { byteOffset: number }).byteOffset,
-              (data as unknown as { byteLength: number }).byteLength
-            );
-            fullView.set(sourceBytes);
-            bytes = fullView;
-          } else {
-            bytes = new Uint8Array(
-              (data as unknown as { buffer: ArrayBuffer }).buffer,
-              (data as unknown as { byteOffset: number }).byteOffset,
-              (data as unknown as { byteLength: number }).byteLength
-            );
+      // Check for fletcher32 (filter_id=3) to adjust sizes
+      let hasF32 = false;
+      if (filterPipeline) {
+        for (const f of filterPipeline) {
+          if (f.get("filter_id") === 3) {
+            hasF32 = true;
+            break;
           }
-          this.refs[key] = inlineBytes(bytes);
         }
-      } catch {
-        // Skip chunks that can't be read
       }
+
+      const chunkLocations = getChunkLocations(
+        this.fh,
+        storageInfo.chunkAddress!,
+        storageInfo.chunkDims!,
+        shape,
+        storageInfo.chunkShape!
+      );
+
+      for (const loc of chunkLocations) {
+        const key = `${path}/${loc.chunkIndex.join(".")}`;
+        let size = hasFilters ? loc.size : uncompressedChunkBytes;
+        if (hasF32) {
+          size -= 4; // Strip fletcher32 checksum
+        }
+
+        if (size <= this.inlineThreshold) {
+          const bytes = new Uint8Array(this.fh.slice(loc.offset, loc.offset + size));
+          this.refs[key] = inlineBytes(bytes);
+        } else {
+          this.refs[key] = [this.url, loc.offset, size];
+        }
+      }
+    } else if (storageInfo.layoutClass === 1) {
+      // Contiguous but no data written - empty dataset, no refs needed
     }
+  }
+
+  /**
+   * Get dimension names for a dataset.
+   */
+  private getArrayDims(dataset: any, path: string, shape: number[]): string[] {
+    if (!shape || shape.length === 0) return [];
+
+    const rank = shape.length;
+    const dims: string[] = [];
+
+    // Check for DIMENSION_LIST attribute (links to dimension scales)
+    try {
+      const attrs = dataset._dataobjects.get_attributes();
+      // jsfive doesn't have get_dimension_labels / get_attached_scales
+      // Just fallback to phony dims for now
+    } catch {
+      // ignore
+    }
+
+    for (let i = 0; i < rank; i++) {
+      dims.push(`phony_dim_${i}`);
+    }
+    return dims;
   }
 
   /**
    * Transfer attributes from an HDF5 object to the Zarr .zattrs.
    */
-  private transferAttrs(
-    h5obj: Group | Dataset | InstanceType<typeof import("h5wasm").File>,
-    path: string
-  ): void {
+  private transferAttrs(h5obj: any, path: string): void {
     const attrs: Record<string, unknown> = {};
-    const attrNames = Object.keys(h5obj.attrs);
+    let rawAttrs: Record<string, unknown>;
+    try {
+      rawAttrs = h5obj.attrs;
+      if (!rawAttrs || typeof rawAttrs !== "object") return;
+    } catch {
+      return;
+    }
 
-    for (const name of attrNames) {
+    // Detect which attributes are HDF5 enum type (for boolean conversion)
+    let enumAttrs = new Map<string, number>();
+    try {
+      const dataobjects = h5obj._dataobjects;
+      if (dataobjects) {
+        enumAttrs = getAttrDatatypeClasses(dataobjects, this.fh);
+      }
+    } catch {
+      // ignore
+    }
+
+    for (const [name, value] of Object.entries(rawAttrs)) {
       if (HIDDEN_ATTRS.has(name)) continue;
       if (name === "_FillValue") continue;
 
-      try {
-        const attr = h5obj.attrs[name];
-        let value = attr.json_value;
+      let v: unknown = value;
 
-        if (value === null || value === undefined) {
-          value = "";
-        }
-
-        // Check if value is "DIMENSION_SCALE" and skip
-        if (value === "DIMENSION_SCALE") continue;
-
-        attrs[name] = value;
-      } catch {
-        // Skip attributes that can't be read
+      // Handle bytes/strings
+      if (v === null || v === undefined) {
+        v = "";
       }
+      if (v === "DIMENSION_SCALE") continue;
+
+      // Convert HDF5 enum (boolean) attributes: 0 → false, 1 → true
+      if (enumAttrs.get(name) === DATATYPE_ENUMERATED) {
+        if (v === 0) v = false;
+        else if (v === 1) v = true;
+      }
+
+      // Convert typed arrays to plain arrays
+      if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
+        v = Array.from(v as unknown as Iterable<number>);
+      }
+
+      // Convert single-element arrays to scalars
+      if (Array.isArray(v) && v.length === 1) {
+        v = v[0];
+      }
+
+      attrs[name] = v;
     }
 
     if (Object.keys(attrs).length > 0) {
@@ -715,13 +946,6 @@ const METADATA_SUFFIXES = [".zgroup", ".zarray", ".zattrs"];
 
 /**
  * Convert a Reference Spec JSON to Zarr v2 consolidated metadata (.zmetadata).
- *
- * Extracts all metadata entries (.zgroup, .zarray, .zattrs) from the
- * reference spec refs and returns them as parsed JSON objects in the
- * Zarr consolidated metadata format.
- *
- * @param refSpec - A Reference Spec v1 object (e.g., from SingleHdf5ToZarr.translate()).
- * @returns Zarr v2 consolidated metadata object.
  */
 export function refSpecToConsolidatedMetadata(
   refSpec: ReferenceSpec
