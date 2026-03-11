@@ -9,8 +9,27 @@ It should support large HDF5 files using range requests and/or streaming. When p
 Basically, we want to port into JavaScript: the `SingleHdf5ToZarr` and its `SingleHdf5ToZarr.translate` function from the `kerchunk` Python package.
 - https://github.com/fsspec/kerchunk/blob/main/kerchunk/hdf.py#L52
 
-## Test fixture generation
+## Development
 
-Test fixtures consist of `.h5ad` files (HDF5), `.adata.zarr` directories (Zarr DirectoryStore), and `.adata.zarr.json` files (JSON representation of the Zarr DirectoryStore for in-memory use with Zarrita).
+### Setup
+
+Install PNPM and UV.
+
+```sh
+pnpm install
+pnpm run generate-fixtures
+```
+
+### Test
+
+```sh
+pnpm run test
+```
+
+### Build
+
+```sh
+pnpm run build
+```
 
 
