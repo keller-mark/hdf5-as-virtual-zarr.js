@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v5
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -26,5 +28,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run generate-fixtures
 
       - run: pnpm test

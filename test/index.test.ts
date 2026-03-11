@@ -389,6 +389,240 @@ describe("SingleHdf5ToZarr", () => {
     });
   });
 
+  describe("zarrita equivalence (zarr v3) - minimal fixture", () => {
+    it("should open as zarr group via ReferenceStore", async () => {
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const store = ReferenceStore.fromSpec(refSpec);
+      const grp = await open(store, { kind: "group" });
+      expect(grp).toBeDefined();
+      expect(grp.attrs).toBeDefined();
+    });
+
+    it("X array data should be equivalent between zarr v3 store and reference spec", async () => {
+      // From zarr v3 DirectoryStore-as-JSON
+      const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      // From HDF5 reference spec
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("X"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Float32Array)).toEqual(
+        Array.from(zarrData.data as Float32Array)
+      );
+      expect(refData.shape).toEqual(zarrData.shape);
+    });
+
+    it("obs/_index data should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/_index"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+
+    it("var/_index data should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("var/_index"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("minimal.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("var/_index"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+  });
+
+  describe("zarrita equivalence (zarr v3) - dense fixture", () => {
+    it("X array data should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("X"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Float32Array)).toEqual(
+        Array.from(zarrData.data as Float32Array)
+      );
+      expect(refData.shape).toEqual(zarrData.shape);
+    });
+
+    it("obs/_index data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/_index"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+
+    it("var/_index data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("var/_index"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("var/_index"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+
+    it("obsm/X_umap data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obsm/X_umap"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obsm/X_umap"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Float32Array)).toEqual(
+        Array.from(zarrData.data as Float32Array)
+      );
+      expect(refData.shape).toEqual(zarrData.shape);
+    });
+
+    it("obs/categorical/codes data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/categorical/codes"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/categorical/codes"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Int8Array)).toEqual(
+        Array.from(zarrData.data as Int8Array)
+      );
+    });
+
+    it("obs/categorical/categories data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/categorical/categories"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/categorical/categories"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+
+    it("obs/string data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/string"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/string"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+
+    it("group attrs should be equivalent at root level", async () => {
+      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
+      const zarrGrp = await open(zarrRoot(zarrStore), { kind: "group" });
+
+      const refSpec = generateRefSpec("dense.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refGrp = await open(zarrRoot(refStore), { kind: "group" });
+
+      expect(refGrp.attrs["encoding-type"]).toEqual(zarrGrp.attrs["encoding-type"]);
+      expect(refGrp.attrs["encoding-version"]).toEqual(zarrGrp.attrs["encoding-version"]);
+    });
+  });
+
+  describe("zarrita equivalence (zarr v3) - sparse fixture", () => {
+    it("X group should exist in reference spec (CSR sparse format)", async () => {
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const grp = await open(zarrRoot(refStore).resolve("X"), { kind: "group" });
+      expect(grp).toBeDefined();
+    });
+
+    it("X/data should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("X/data"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("X/data"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Float32Array)).toEqual(
+        Array.from(zarrData.data as Float32Array)
+      );
+    });
+
+    it("X/indices should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indices"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("X/indices"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Int32Array)).toEqual(
+        Array.from(zarrData.data as Int32Array)
+      );
+    });
+
+    it("X/indptr should be equivalent between zarr v3 store and reference spec", async () => {
+      const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indptr"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("X/indptr"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data as Int32Array)).toEqual(
+        Array.from(zarrData.data as Int32Array)
+      );
+    });
+
+    it("obs/_index data should be equivalent", async () => {
+      const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
+      const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
+      const zarrData = await get(zarrArr);
+
+      const refSpec = generateRefSpec("sparse.h5ad");
+      const refStore = ReferenceStore.fromSpec(refSpec);
+      const refArr = await open(zarrRoot(refStore).resolve("obs/_index"), { kind: "array" });
+      const refData = await get(refArr);
+
+      expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
+    });
+  });
+
   describe("kerchunk ground-truth comparison - minimal fixture", () => {
     it("should match kerchunk output exactly", () => {
       const ours = generateRefSpec("minimal.h5ad");
