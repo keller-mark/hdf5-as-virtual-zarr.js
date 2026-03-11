@@ -1,0 +1,3 @@
+[submodule "kerchunk"]
+	path = kerchunk
+	url = https://github.com/fsspec/kerchunk
