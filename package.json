@@ -14,7 +14,9 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "generate-fixtures": "uv run test/fixtures/generate_fixtures.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.adata.zarr test/fixtures/minimal.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.adata.zarr test/fixtures/dense.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.adata.zarr test/fixtures/sparse.adata.zarr.json"
+    "generate-fixtures": "pnpm run generate-fixtures-v2 && pnpm run generate-fixtures-v3",
+    "generate-fixtures-v2": "uv run test/fixtures/generate_fixtures.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.adata.zarr test/fixtures/minimal.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.adata.zarr test/fixtures/dense.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.adata.zarr test/fixtures/sparse.adata.zarr.json",
+    "generate-fixtures-v3": "uv run test/fixtures/generate_fixtures_v3.py && node scripts/directory-to-memory-store.mjs test/fixtures/minimal.v3.adata.zarr test/fixtures/minimal.v3.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/dense.v3.adata.zarr test/fixtures/dense.v3.adata.zarr.json && node scripts/directory-to-memory-store.mjs test/fixtures/sparse.v3.adata.zarr test/fixtures/sparse.v3.adata.zarr.json"
   },
   "repository": {
     "type": "git",
