@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HDF5 to Zarr</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 2rem; color: #222; }
+    h1 { margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-bottom: 1.5rem; }
+    #drop-zone {
+      border: 2px dashed #aaa; border-radius: 8px; padding: 2rem; text-align: center;
+      margin-bottom: 1rem; transition: border-color 0.2s, background 0.2s; cursor: pointer;
+    }
+    #drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+    #drop-zone p { margin-top: 0.5rem; color: #888; }
+    input[type="file"] { display: none; }
+    .actions { margin-bottom: 1rem; display: flex; gap: 0.5rem; }
+    button {
+      padding: 0.5rem 1rem; border: 1px solid #ccc; border-radius: 4px;
+      background: #f9f9f9; cursor: pointer; font-size: 0.9rem;
+    }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button:not(:disabled):hover { background: #eee; }
+    #status { margin-bottom: 1rem; color: #555; }
+    #output {
+      background: #f6f8fa; border: 1px solid #ddd; border-radius: 4px;
+      padding: 1rem; overflow: auto; max-height: 70vh; font-size: 0.85rem;
+      white-space: pre-wrap; word-break: break-all; display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>HDF5 to Zarr</h1>
+  <p class="subtitle">Select or drop an HDF5 file to generate a Zarr reference spec JSON.</p>
+
+  <div id="drop-zone">
+    <label>
+      <strong>Choose an HDF5 file</strong>
+      <input type="file" id="file-input" accept=".h5,.hdf5,.h5ad,.he5,.hdf">
+    </label>
+    <p>or drag &amp; drop here</p>
+  </div>
+
+  <div class="actions">
+    <button id="download-btn" disabled>Download JSON</button>
+  </div>
+
+  <p id="status"></p>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import h5wasm from "https://esm.sh/h5wasm@0.9.0";
+    import { SingleHdf5ToZarr } from "https://esm.sh/hdf5-to-zarr@0.1.0";
+
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+    const downloadBtn = document.getElementById("download-btn");
+    const output = document.getElementById("output");
+    const status = document.getElementById("status");
+
+    let jsonResult = null;
+    let fileName = "";
+
+    /* ---- drag & drop ---- */
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("drag-over");
+      const file = e.dataTransfer.files[0];
+      if (file) processFile(file);
+    });
+
+    /* ---- file input ---- */
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (file) processFile(file);
+    });
+
+    /* ---- download ---- */
+    downloadBtn.addEventListener("click", () => {
+      if (!jsonResult) return;
+      const blob = new Blob([jsonResult], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName.replace(/\.[^.]+$/, "") + ".refspec.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 100);
+    });
+
+    /* ---- process file ---- */
+    async function processFile(file) {
+      jsonResult = null;
+      downloadBtn.disabled = true;
+      output.style.display = "none";
+      output.textContent = "";
+      fileName = file.name;
+      status.textContent = "Loading h5wasm…";
+
+      try {
+        const { FS } = await h5wasm.ready;
+
+        status.textContent = "Reading file…";
+        const buf = await file.arrayBuffer();
+        const u8 = new Uint8Array(buf);
+
+        /* write to emscripten virtual FS */
+        const vfsPath = "/" + file.name;
+        FS.writeFile(vfsPath, u8);
+
+        status.textContent = "Converting HDF5 → Zarr reference spec…";
+        const h5File = new h5wasm.File(vfsPath, "r");
+        const converter = new SingleHdf5ToZarr(h5File, { url: null });
+        const refSpec = converter.translate();
+        h5File.close();
+        FS.unlink(vfsPath);
+
+        jsonResult = JSON.stringify(refSpec, null, 2);
+        output.textContent = jsonResult;
+        output.style.display = "block";
+        downloadBtn.disabled = false;
+        status.textContent = "Done ✓";
+      } catch (err) {
+        status.textContent = "Error: " + err.message;
+        console.error(err);
+      }
+    }
+  </script>
+</body>
+</html>
