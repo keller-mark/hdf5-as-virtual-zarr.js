@@ -662,6 +662,14 @@ describe("SingleHdf5ToZarr", () => {
     });
   });
 
+  describe("kerchunk ground-truth comparison with mouse_liver.h5ad ref spec output", () => {
+    it("should match exactly", () => {
+      const ours = generateRefSpec("mouse_liver.h5ad");
+      const kerchunk = loadKerchunkRefSpec("mouse_liver.h5ad.refspec.json");
+      expect(ours).toEqual(kerchunk);
+    });
+  });
+
   describe("kerchunk ground-truth comparison - sparse fixture", () => {
     it("should match kerchunk output exactly", () => {
       const ours = generateRefSpec("sparse.h5ad");
