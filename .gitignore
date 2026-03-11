@@ -1,5 +1,6 @@
 node_modules/
 dist/
+demo-dist/
 *.tgz
 .DS_Store
 *.adata.zarr/
@@ -7,3 +8,5 @@ test/fixtures/*.h5ad
 test/fixtures/*.refspec.json
 test/fixtures/*.zmetadata.json
 test/fixtures/*.zarr.json
+test-results/
+playwright-report/
