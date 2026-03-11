@@ -85,7 +85,7 @@ function decodeFloat16(low: number, high: number): number {
   return sign ? -magnitude : magnitude;
 }
 
-export class DataView64 extends DataView {
+export class DataView64 extends DataView<ArrayBuffer> {
   getFloat16(byteOffset: number, littleEndian: boolean): number {
     const bytes = [this.getUint8(byteOffset), this.getUint8(byteOffset + 1)];
     if (!littleEndian) bytes.reverse();

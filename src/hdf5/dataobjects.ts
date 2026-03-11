@@ -500,7 +500,7 @@ export class DataObjects {
     return this.find_msg_type(DATASPACE_MSG_TYPE).length > 0;
   }
 
-  get dtype(): string | string[] {
+  get dtype(): string | any[] {
     const msg = this.find_msg_type(DATATYPE_MSG_TYPE)[0];
     const msg_offset = msg.get("offset_to_message") as number;
     const relOffset = msg_offset - this.bufStart;
@@ -792,9 +792,9 @@ export class DataObjects {
     const relOffset = absOffset - this.bufStart;
     const data = this._decode_link_info_msg(this.buf, relOffset);
 
-    const heap_address: number | null = data.get("heap_address");
-    const name_btree_address: number | null = data.get("name_btree_address");
-    const order_btree_address: number | null = data.get("order_btree_address");
+    const heap_address: number | null = data.get("heap_address") ?? null;
+    const name_btree_address: number | null = data.get("name_btree_address") ?? null;
+    const order_btree_address: number | null = data.get("order_btree_address") ?? null;
 
     if (name_btree_address !== null) {
       return this._iter_links_btree_v2(name_btree_address, order_btree_address, heap_address!);
