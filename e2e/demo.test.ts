@@ -1,23 +1,7 @@
 import { test, expect } from "@playwright/test";
-import * as h5wasm from "h5wasm/node";
 import { join } from "path";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
 
-const tmpDir = mkdtempSync(join(tmpdir(), "h5-demo-test-"));
-const h5Path = join(tmpDir, "test.h5");
-
-test.beforeAll(async () => {
-  await h5wasm.ready;
-  const f = new h5wasm.File(h5Path, "w");
-  f.create_dataset({
-    name: "data",
-    data: new Float32Array([1, 2, 3, 4, 5, 6]),
-    shape: [2, 3],
-    dtype: "<f",
-  });
-  f.close();
-});
+const h5Path = join(import.meta.dirname, "../test/fixtures/minimal.h5ad");
 
 test("converts HDF5 file and displays JSON reference spec", async ({ page }) => {
   await page.goto("/");
