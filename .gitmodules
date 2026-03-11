@@ -1,0 +1,9 @@
+[submodule "kerchunk"]
+	path = kerchunk
+	url = https://github.com/fsspec/kerchunk
+[submodule "jsfive"]
+	path = jsfive
+	url = https://github.com/usnistgov/jsfive
+[submodule "chunkd"]
+	path = chunkd
+	url = https://github.com/blacha/chunkd
