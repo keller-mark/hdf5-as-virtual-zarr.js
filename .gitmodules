@@ -1,9 +1,6 @@
 [submodule "kerchunk"]
 	path = kerchunk
 	url = https://github.com/fsspec/kerchunk
-[submodule "h5wasm"]
-	path = h5wasm
-	url = https://github.com/usnistgov/h5wasm
 [submodule "jsfive"]
 	path = jsfive
 	url = https://github.com/usnistgov/jsfive
