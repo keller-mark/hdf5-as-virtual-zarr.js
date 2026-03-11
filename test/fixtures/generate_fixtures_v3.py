@@ -17,11 +17,15 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-anndata.settings.zarr_write_format = 3
+anndata.settings.zarr_write_format = 3  # Force Zarr v3 format for all write_zarr() calls
 
 
 def make_diagonal(dtype: str, m: int, n: int) -> np.ndarray:
-    """Create a diagonal-ish matrix for testing."""
+    """Create a diagonal-ish matrix for testing.
+
+    Sets diagonal elements to their index value, except for the middle
+    diagonal element which is left as zero to test handling of sparse gaps.
+    """
     mat = np.zeros((m, n), dtype=dtype)
     for i in range(min(m, n)):
         if i != min(m // 2, n // 2):
