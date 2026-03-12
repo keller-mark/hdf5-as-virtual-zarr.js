@@ -1,4 +1,4 @@
-# hdf5-as-virtual-zarr
+# hdf5-as-virtual-zarr.js
 
 [![NPM](https://img.shields.io/npm/v/hdf5-as-virtual-zarr.svg?color=black)](https://www.npmjs.com/package/hdf5-as-virtual-zarr)
 
