@@ -1,4 +1,4 @@
-# hdf5-to-zarr.js
+# hdf5-as-virtual-zarr
 
 Given an input HDF5 file URL, generate a Zarr References Specification JSON output.
 
