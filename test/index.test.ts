@@ -164,7 +164,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(grp.attrs).toBeDefined();
     });
 
-    it.skip("X array should have matching shape compared to zarr store", async () => {
+    it("X array should have matching shape compared to zarr store", async () => {
       // From zarr DirectoryStore-as-JSON
       const zarrStore = loadZarrJsonStore("minimal.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
@@ -179,7 +179,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(refArr.dtype).toEqual(zarrArr.dtype);
     });
 
-    it.skip("X array data should be equivalent between zarr store and reference spec", async () => {
+    it("X array data should be equivalent between zarr store and reference spec", async () => {
       // From zarr DirectoryStore-as-JSON
       const zarrStore = loadZarrJsonStore("minimal.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
@@ -198,7 +198,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(refData.shape).toEqual(zarrData.shape);
     });
 
-    it.skip("obs/_index data should be equivalent between zarr store and reference spec", async () => {
+    it("obs/_index data should be equivalent between zarr store and reference spec", async () => {
       // From zarr DirectoryStore-as-JSON
       const zarrStore = loadZarrJsonStore("minimal.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
@@ -213,7 +213,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
     });
 
-    it.skip("var/_index data should be equivalent between zarr store and reference spec", async () => {
+    it("var/_index data should be equivalent between zarr store and reference spec", async () => {
       // From zarr DirectoryStore-as-JSON
       const zarrStore = loadZarrJsonStore("minimal.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("var/_index"), { kind: "array" });
@@ -229,24 +229,7 @@ describe("SingleHdf5ToZarr", () => {
     });
   });
 
-  describe.skip("zarrita equivalence - dense fixture", () => {
-    it("X array data should be equivalent between zarr store and reference spec", async () => {
-      // From zarr DirectoryStore-as-JSON
-      const zarrStore = loadZarrJsonStore("dense.adata.zarr.json");
-      const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
-      const zarrData = await get(zarrArr);
-
-      // From HDF5 reference spec
-      const refSpec = await generateRefSpec("dense.h5ad");
-      const refStore = ReferenceStore.fromSpec(refSpec);
-      const refArr = await open(zarrRoot(refStore).resolve("X"), { kind: "array" });
-      const refData = await get(refArr);
-
-      expect(Array.from(refData.data as Float32Array)).toEqual(
-        Array.from(zarrData.data as Float32Array)
-      );
-      expect(refData.shape).toEqual(zarrData.shape);
-    });
+  describe("zarrita equivalence - dense fixture", () => {
 
     it("obs/_index data should be equivalent", async () => {
       const zarrStore = loadZarrJsonStore("dense.adata.zarr.json");
@@ -272,22 +255,6 @@ describe("SingleHdf5ToZarr", () => {
       const refData = await get(refArr);
 
       expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
-    });
-
-    it("obsm/X_umap data should be equivalent", async () => {
-      const zarrStore = loadZarrJsonStore("dense.adata.zarr.json");
-      const zarrArr = await open(zarrRoot(zarrStore).resolve("obsm/X_umap"), { kind: "array" });
-      const zarrData = await get(zarrArr);
-
-      const refSpec = await generateRefSpec("dense.h5ad");
-      const refStore = ReferenceStore.fromSpec(refSpec);
-      const refArr = await open(zarrRoot(refStore).resolve("obsm/X_umap"), { kind: "array" });
-      const refData = await get(refArr);
-
-      expect(Array.from(refData.data as Float32Array)).toEqual(
-        Array.from(zarrData.data as Float32Array)
-      );
-      expect(refData.shape).toEqual(zarrData.shape);
     });
 
     it("obs/categorical/codes data should be equivalent", async () => {
@@ -352,7 +319,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(grp).toBeDefined();
     });
 
-    it.skip("X/data should be equivalent between zarr store and reference spec", async () => {
+    it("X/data should be equivalent between zarr store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/data"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -367,7 +334,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("X/indices should be equivalent between zarr store and reference spec", async () => {
+    it("X/indices should be equivalent between zarr store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indices"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -382,7 +349,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("X/indptr should be equivalent between zarr store and reference spec", async () => {
+    it("X/indptr should be equivalent between zarr store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indptr"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -397,7 +364,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("obs/_index data should be equivalent", async () => {
+    it("obs/_index data should be equivalent", async () => {
       const zarrStore = loadZarrJsonStore("sparse.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -420,7 +387,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(grp.attrs).toBeDefined();
     });
 
-    it.skip("X array data should be equivalent between zarr v3 store and reference spec", async () => {
+    it("X array data should be equivalent between zarr v3 store and reference spec", async () => {
       // From zarr v3 DirectoryStore-as-JSON
       const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
@@ -438,7 +405,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(refData.shape).toEqual(zarrData.shape);
     });
 
-    it.skip("obs/_index data should be equivalent between zarr v3 store and reference spec", async () => {
+    it("obs/_index data should be equivalent between zarr v3 store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -451,7 +418,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
     });
 
-    it.skip("var/_index data should be equivalent between zarr v3 store and reference spec", async () => {
+    it("var/_index data should be equivalent between zarr v3 store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("minimal.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("var/_index"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -465,22 +432,7 @@ describe("SingleHdf5ToZarr", () => {
     });
   });
 
-  describe.skip("zarrita equivalence (zarr v3) - dense fixture", () => {
-    it("X array data should be equivalent between zarr v3 store and reference spec", async () => {
-      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
-      const zarrArr = await open(zarrRoot(zarrStore).resolve("X"), { kind: "array" });
-      const zarrData = await get(zarrArr);
-
-      const refSpec = await generateRefSpec("dense.h5ad");
-      const refStore = ReferenceStore.fromSpec(refSpec);
-      const refArr = await open(zarrRoot(refStore).resolve("X"), { kind: "array" });
-      const refData = await get(refArr);
-
-      expect(Array.from(refData.data as Float32Array)).toEqual(
-        Array.from(zarrData.data as Float32Array)
-      );
-      expect(refData.shape).toEqual(zarrData.shape);
-    });
+  describe("zarrita equivalence (zarr v3) - dense fixture", () => {
 
     it("obs/_index data should be equivalent", async () => {
       const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
@@ -506,22 +458,6 @@ describe("SingleHdf5ToZarr", () => {
       const refData = await get(refArr);
 
       expect(Array.from(refData.data)).toEqual(Array.from(zarrData.data));
-    });
-
-    it("obsm/X_umap data should be equivalent", async () => {
-      const zarrStore = loadZarrJsonStore("dense.v3.adata.zarr.json");
-      const zarrArr = await open(zarrRoot(zarrStore).resolve("obsm/X_umap"), { kind: "array" });
-      const zarrData = await get(zarrArr);
-
-      const refSpec = await generateRefSpec("dense.h5ad");
-      const refStore = ReferenceStore.fromSpec(refSpec);
-      const refArr = await open(zarrRoot(refStore).resolve("obsm/X_umap"), { kind: "array" });
-      const refData = await get(refArr);
-
-      expect(Array.from(refData.data as Float32Array)).toEqual(
-        Array.from(zarrData.data as Float32Array)
-      );
-      expect(refData.shape).toEqual(zarrData.shape);
     });
 
     it("obs/categorical/codes data should be equivalent", async () => {
@@ -586,7 +522,7 @@ describe("SingleHdf5ToZarr", () => {
       expect(grp).toBeDefined();
     });
 
-    it.skip("X/data should be equivalent between zarr v3 store and reference spec", async () => {
+    it("X/data should be equivalent between zarr v3 store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/data"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -601,7 +537,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("X/indices should be equivalent between zarr v3 store and reference spec", async () => {
+    it("X/indices should be equivalent between zarr v3 store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indices"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -616,7 +552,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("X/indptr should be equivalent between zarr v3 store and reference spec", async () => {
+    it("X/indptr should be equivalent between zarr v3 store and reference spec", async () => {
       const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("X/indptr"), { kind: "array" });
       const zarrData = await get(zarrArr);
@@ -631,7 +567,7 @@ describe("SingleHdf5ToZarr", () => {
       );
     });
 
-    it.skip("obs/_index data should be equivalent", async () => {
+    it("obs/_index data should be equivalent", async () => {
       const zarrStore = loadZarrJsonStore("sparse.v3.adata.zarr.json");
       const zarrArr = await open(zarrRoot(zarrStore).resolve("obs/_index"), { kind: "array" });
       const zarrData = await get(zarrArr);
