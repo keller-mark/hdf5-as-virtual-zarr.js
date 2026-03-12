@@ -16,6 +16,15 @@ export class HdfStore implements AsyncReadable {
 
   // TODO: does it make sense to support getRange here?
 
+  /**
+   *
+   * @param {AsyncReadable} hdfSource Assumed to be a zarrita Store,
+   * with the HDF5 file located at the root key "/". In other words,
+   * hdfSource.getRange("/", { offset, length }) should return the
+   * corresponding byte range from the HDF5 file.
+   * @returns {Promise<HdfStore>} An HdfStore instance which internally
+   * uses a ReferenceStore and handles the Reference Specification JSON generation.
+   */
   static async fromStore(hdfSource: AsyncReadable): Promise<HdfStore> {
     const converter = new SingleHdf5ToZarr(hdfSource, { url: null });
     const refSpec = await converter.translate();
