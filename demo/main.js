@@ -97,7 +97,7 @@ async function processFile(file) {
 
   try {
     const source = new FileSource(file);
-    const converter = new SingleHdf5ToZarr(source, { url: file.name });
+    const converter = new SingleHdf5ToZarr(source, { url: null });
     const refSpec = await converter.translate();
 
     jsonResult = JSON.stringify(refSpec, null, 2);
