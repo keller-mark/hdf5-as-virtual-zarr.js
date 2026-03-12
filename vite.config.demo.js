@@ -5,7 +5,7 @@ export default defineConfig({
   base: '/hdf5-as-virtual-zarr/',
   resolve: {
     alias: {
-      "hdf5-to-virtual-zarr": resolve(import.meta.dirname, "src/index.ts"),
+      "hdf5-as-virtual-zarr": resolve(import.meta.dirname, "src/index.ts"),
     },
   },
   build: {
