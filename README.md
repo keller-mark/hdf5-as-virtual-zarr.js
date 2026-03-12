@@ -1,5 +1,7 @@
 # hdf5-as-virtual-zarr
 
+[![NPM](https://img.shields.io/npm/v/hdf5-as-virtual-zarr.svg?color=black)](https://www.npmjs.com/package/hdf5-as-virtual-zarr)
+
 Given an input HDF5 file URL, generate a Zarr References Specification JSON output.
 
 This TypeScript implementation can run in a web browser, and generates output that is compatible with the [ReferenceStore](https://github.com/manzt/zarrita.js/blob/d511ea44551a62c2af64ba33672672e9286490da/packages/%40zarrita-storage/src/ref.ts#L42) from [zarrita.js](https://github.com/manzt/zarrita.js).
@@ -8,6 +10,20 @@ It supports large HDF5 files using range requests (fetching only the subset of b
 
 This is a port of [SingleHdf5ToZarr](https://github.com/fsspec/kerchunk/blob/main/kerchunk/hdf.py#L52) and its `translate` function from the `kerchunk` Python package.
 
+## Usage
+
+```ts
+import { open, get, root } from "zarrita";
+import { FetchStore } from "@zarrita/storage";
+import { HdfStore } from "hdf5-as-virtual-zarr";
+
+const internalStore = new FetchStore("https://example.com/data.h5");
+const hdfStore = await HdfStore.fromStore(internalStore);
+
+const storeRoot = root(hdfStore);
+const arr = await open(storeRoot.resolve("X"), { kind: "array" });
+const arrData = await get(arr);
+```
 
 ## Development
 
