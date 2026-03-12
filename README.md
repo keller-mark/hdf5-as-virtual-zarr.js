@@ -1,5 +1,7 @@
 # hdf5-as-virtual-zarr
 
+[![NPM](https://img.shields.io/npm/v/hdf5-as-virtual-zarr.svg?color=black)](https://www.npmjs.com/package/hdf5-as-virtual-zarr)
+
 Given an input HDF5 file URL, generate a Zarr References Specification JSON output.
 
 This TypeScript implementation can run in a web browser, and generates output that is compatible with the [ReferenceStore](https://github.com/manzt/zarrita.js/blob/d511ea44551a62c2af64ba33672672e9286490da/packages/%40zarrita-storage/src/ref.ts#L42) from [zarrita.js](https://github.com/manzt/zarrita.js).
