@@ -11,6 +11,7 @@ export interface ZarrConsolidatedMetadata {
 
 /**
  * Metadata key suffixes included in Zarr consolidated metadata.
+ * TODO: support zarr v3 (zarr.json files)
  */
 const METADATA_SUFFIXES = [".zgroup", ".zarray", ".zattrs"];
 
