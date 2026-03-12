@@ -5,4 +5,4 @@ For your reference, the Python implementation can be found in `kerchunk/kerchunk
 This implementation can reuse logic from the `jsfive` NPM package (present in this repo as a git submodule for your reference):
 - IMPORTANT: we always want to avoid loading the full HDF5 file, as it may be huge, multiple gigabytes. `jsfive` assumes it always has the full file contents in an arrayBuffer. Its logic will need to be modified to support partial reads via range requests.
 - `jsfive` provides internal utilities such as `BTreeV1RawDataChunks` to compute chunk addresses (byte offsets) and sizes/lengths. This logic will be important for creating the reference spec JSON.
-- We will use the `chunkd` `Source` interface to implement partial reads (fetching a subset of bytes using a range request).
+- We use the `AsyncReadable` interface from the `@zarrita/storage` package (present in this repo as a git submodule at `zarrita.js/packages/@zarrita-storage/`) to implement partial reads via its `getRange` method.
