@@ -11,13 +11,36 @@ class FileSource {
     this.file = file;
     this.url = new URL("file:///" + encodeURIComponent(file.name));
     this.metadata = { size: file.size };
+    this._fetchCalls = [];
   }
 
   async fetch(offset, length) {
     const blob = length !== undefined
       ? this.file.slice(offset, offset + length)
       : this.file.slice(offset);
-    return blob.arrayBuffer();
+    const ab = await blob.arrayBuffer();
+    this._fetchCalls.push({ offset, length: ab.byteLength });
+    return ab;
+  }
+
+  uniqueBytesFetched() {
+    if (this._fetchCalls.length === 0) return 0;
+    const intervals = this._fetchCalls
+      .map(({ offset, length }) => [offset, offset + length])
+      .sort((a, b) => a[0] - b[0]);
+    let total = 0;
+    let [curStart, curEnd] = intervals[0];
+    for (let i = 1; i < intervals.length; i++) {
+      const [start, end] = intervals[i];
+      if (start <= curEnd) {
+        curEnd = Math.max(curEnd, end);
+      } else {
+        total += curEnd - curStart;
+        curStart = start;
+        curEnd = end;
+      }
+    }
+    return total + (curEnd - curStart);
   }
 }
 
@@ -75,7 +98,13 @@ async function processFile(file) {
     output.textContent = jsonResult;
     output.style.display = "block";
     downloadBtn.disabled = false;
-    status.textContent = "Done ✓";
+
+    const bytesRead = source.uniqueBytesFetched();
+    const pct = ((bytesRead / file.size) * 100).toFixed(1);
+    const fmt = (n) => n >= 1024 * 1024
+      ? (n / (1024 * 1024)).toFixed(2) + " MB"
+      : (n / 1024).toFixed(1) + " KB";
+    status.textContent = `Done ✓ — read ${fmt(bytesRead)} of ${fmt(file.size)} (${pct}%)`;
   } catch (err) {
     status.textContent = "Error: " + err.message;
     console.error(err);
