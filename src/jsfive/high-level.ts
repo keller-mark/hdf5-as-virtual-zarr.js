@@ -3,10 +3,10 @@
  * File, Group, Dataset — the public-facing HDF5 object model.
  *
  * All classes that read from the file use async factory methods,
- * delegating byte-range reads to Source.
+ * delegating byte-range reads to AsyncReadable.
  */
 
-import type { Source } from "../types.js";
+import type { AsyncReadable } from "../types.js";
 import { DataObjects } from "./dataobjects.js";
 import { SuperBlock } from "./misc-low-level.js";
 
@@ -102,13 +102,13 @@ export class Group {
 // ────────── File ──────────
 
 export class File extends Group {
-  _source: Source;
+  _source: AsyncReadable;
   filename: string;
   mode = "r";
   userblock_size = 0;
 
   private constructor(
-    source: Source,
+    source: AsyncReadable,
     dataobjects: DataObjects,
     links: Record<string, any>,
     filename: string
@@ -120,7 +120,7 @@ export class File extends Group {
     this.filename = filename;
   }
 
-  static async create(source: Source, filename?: string): Promise<File> {
+  static async create(source: AsyncReadable, filename?: string): Promise<File> {
     const superblock = await SuperBlock.create(source, 0);
     const offset = await superblock.getOffsetToDataobjects();
     const dataobjects = await DataObjects.create(source, offset);

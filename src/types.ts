@@ -1,3 +1,7 @@
+import type { AsyncReadable } from "@zarrita/storage";
+
+export type { AsyncReadable };
+
 /**
  * Zarr v2 array metadata (.zarray).
  */
@@ -28,17 +32,18 @@ export interface ReferenceSpec {
   refs: Record<string, string | [string | null, number, number]>;
 }
 
-
-
 /**
- * Minimal Source interface compatible with @chunkd/source.
- * Accepts any object implementing fetch(offset, length?) for partial reads.
+ * Read a byte range from an AsyncReadable source, returning an ArrayBuffer.
+ * Uses getRange("/", { offset, length }) from the zarrita AsyncReadable interface.
  */
-export interface Source {
-  type: string;
-  url: URL;
-  metadata?: { size?: number };
-  head?(options?: { signal: AbortSignal }): Promise<{ size?: number }>;
-  close?(): Promise<void>;
-  fetch(offset: number, length?: number, options?: { signal: AbortSignal }): Promise<ArrayBuffer>;
+export async function fetchRange(
+  source: AsyncReadable,
+  offset: number,
+  length: number
+): Promise<ArrayBuffer> {
+  const result = await source.getRange!("/", { offset, length });
+  if (!result) throw new Error(`fetchRange: no data at offset=${offset} length=${length}`);
+  const copy = new Uint8Array(result.byteLength);
+  copy.set(result);
+  return copy.buffer;
 }

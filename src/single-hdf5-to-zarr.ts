@@ -4,7 +4,8 @@ import { BTreeV1RawDataChunks } from "./jsfive/btree.js";
 import type { ChunkKey } from "./jsfive/btree.js";
 import { struct } from "./jsfive/core.js";
 import { UNDEFINED_ADDRESS } from "./jsfive/misc-low-level.js";
-import type { ZarrArrayMeta, ZarrGroupMeta, ReferenceSpec, Source } from "./types.js";
+import type { ZarrArrayMeta, ZarrGroupMeta, ReferenceSpec, AsyncReadable } from "./types.js";
+import { fetchRange } from "./types.js";
 
 /**
  * Hidden HDF5 attributes that should not be transferred to Zarr.
@@ -329,7 +330,7 @@ function getStorageInfo(dataobjects: DataObjects): {
  * Now async – creates the B-tree via Source.fetch().
  */
 async function getChunkLocations(
-  source: Source,
+  source: AsyncReadable,
   btreeAddress: number,
   chunkDims: number,
   dataShape: number[],
@@ -437,22 +438,22 @@ function getAttrDatatypeClasses(dataobjects: DataObjects): Map<string, number> {
  * Uses vendored async HDF5 parser with Source-based partial reads.
  */
 export class SingleHdf5ToZarr {
-  private source: Source;
+  private source: AsyncReadable;
   private h5File!: Hdf5File;
   private url: string | null;
   private inlineThreshold: number;
   private refs: Record<string, string | [string | null, number, number]>;
 
   /**
-   * @param source - A Source instance for reading the HDF5 file.
+   * @param source - An AsyncReadable instance for reading the HDF5 file.
    * @param options - Configuration options.
    */
   constructor(
-    source: Source,
+    source: AsyncReadable,
     options: SingleHdf5ToZarrOptions = {}
   ) {
     this.source = source;
-    this.url = options.url !== undefined ? options.url : source.url.href;
+    this.url = options.url ?? null;
     this.inlineThreshold = options.inlineThreshold ?? 300;
     this.refs = {};
   }
@@ -733,7 +734,7 @@ export class SingleHdf5ToZarr {
       const size = storageInfo.contiguousSize!;
 
       if (size <= this.inlineThreshold) {
-        const ab = await this.source.fetch(offset, size);
+        const ab = await fetchRange(this.source, offset, size);
         this.refs[key] = inlineBytes(new Uint8Array(ab));
       } else {
         this.refs[key] = [this.url, offset, size];
@@ -778,7 +779,7 @@ export class SingleHdf5ToZarr {
         }
 
         if (size <= this.inlineThreshold) {
-          const ab = await this.source.fetch(loc.offset, size);
+          const ab = await fetchRange(this.source, loc.offset, size);
           this.refs[key] = inlineBytes(new Uint8Array(ab));
         } else {
           this.refs[key] = [this.url, loc.offset, size];

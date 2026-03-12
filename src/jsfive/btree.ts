@@ -2,12 +2,13 @@
  * Vendored and adapted from jsfive/esm/btree.js.
  * BTreeV1Groups, BTreeV1RawDataChunks, BTreeV2GroupNames, BTreeV2GroupOrders.
  *
- * All classes use async factory methods with Source.fetch() for partial reads.
+ * All classes use async factory methods with AsyncReadable.fetch() for partial reads.
  * construct_data_from_chunks() and _filter_chunk() are omitted –
  * we only need chunk location metadata for the reference spec.
  */
 
-import type { Source } from "../types.js";
+import type { AsyncReadable } from "../types.js";
+import { fetchRange } from "../types.js";
 import {
   _unpack_struct_from,
   _structure_size,
@@ -29,13 +30,13 @@ const B_LINK_NODE_V1 = new Map<string, string>([
 const B_LINK_NODE_V1_SIZE = _structure_size(B_LINK_NODE_V1);
 
 async function _readV1NodeHeader(
-  source: Source,
+  source: AsyncReadable,
   offset: number,
   node_level: number | null
 ): Promise<[Map<string, any>, ArrayBuffer]> {
   // Read header + generous amount for keys/addresses that follow
   // We don't know exact size yet, so read header first
-  const hBuf = await source.fetch(offset, B_LINK_NODE_V1_SIZE);
+  const hBuf = await fetchRange(source, offset, B_LINK_NODE_V1_SIZE);
   const node = _unpack_struct_from(B_LINK_NODE_V1, hBuf, 0);
   if (node_level != null && node.get("node_level") !== node_level) {
     throw new Error("node level does not match");
@@ -60,7 +61,7 @@ export class BTreeV1Groups {
     this.depth = depth;
   }
 
-  static async create(source: Source, offset: number): Promise<BTreeV1Groups> {
+  static async create(source: AsyncReadable, offset: number): Promise<BTreeV1Groups> {
     const all_nodes = new Map<number, BTreeV1Node[]>();
 
     async function readNode(
@@ -73,7 +74,7 @@ export class BTreeV1Groups {
       const entries_used = header.get("entries_used");
       // Each entry: key(Q=8) + address(Q=8) = 16 bytes, plus one extra key
       const dataSize = entries_used * 16 + 8;
-      const dataBuf = await source.fetch(readOff, dataSize);
+      const dataBuf = await fetchRange(source, readOff, dataSize);
       let localOff = 0;
 
       const keys: number[] = [];
@@ -145,7 +146,7 @@ export class BTreeV1RawDataChunks {
   }
 
   static async create(
-    source: Source,
+    source: AsyncReadable,
     offset: number,
     dims: number
   ): Promise<BTreeV1RawDataChunks> {
@@ -163,7 +164,7 @@ export class BTreeV1RawDataChunks {
       const fmt = "<" + dims.toFixed() + "Q";
       const fmt_size = struct.calcsize(fmt);
       const entrySize = 8 + fmt_size + 8; // II + dims*Q + Q
-      const dataBuf = await source.fetch(readOff, entries_used * entrySize);
+      const dataBuf = await fetchRange(source, readOff, entries_used * entrySize);
       let localOff = 0;
 
       const keys: ChunkKey[] = [];
@@ -304,13 +305,13 @@ function _calculate_address_formats(
 type RecordParser = (buf: ArrayBuffer, offset: number, size: number) => Map<string, any>;
 
 async function _readBTreeV2(
-  source: Source,
+  source: AsyncReadable,
   offset: number,
   parseRecord: RecordParser
 ): Promise<{ all_nodes: Map<number, any[]>; header: Map<string, any> }> {
   // Read tree header
   const headerSize = _structure_size(B_TREE_HEADER_V2);
-  const hBuf = await source.fetch(offset, headerSize);
+  const hBuf = await fetchRange(source, offset, headerSize);
   const header = _unpack_struct_from(B_TREE_HEADER_V2, hBuf, 0);
   const address_formats = _calculate_address_formats(header);
   const depth = header.get("depth");
@@ -334,7 +335,7 @@ async function _readBTreeV2(
       nrecords * record_size +
       (node_level !== 0 ? (nrecords + 1) * addr_entry_size : 0) +
       4; // checksum
-    const nodeBuf = await source.fetch(off, maxBytes);
+    const nodeBuf = await fetchRange(source, off, maxBytes);
 
     const node = _unpack_struct_from(B_LINK_NODE_V2, nodeBuf, 0);
     node.set("node_level", node_level);
@@ -402,7 +403,7 @@ export class BTreeV2GroupNames {
     this.header = header;
   }
 
-  static async create(source: Source, offset: number): Promise<BTreeV2GroupNames> {
+  static async create(source: AsyncReadable, offset: number): Promise<BTreeV2GroupNames> {
     const { all_nodes, header } = await _readBTreeV2(source, offset, (buf, off) => {
       const namehash = struct.unpack_from("<I", buf, off)[0];
       return new Map([
@@ -435,7 +436,7 @@ export class BTreeV2GroupOrders {
     this.header = header;
   }
 
-  static async create(source: Source, offset: number): Promise<BTreeV2GroupOrders> {
+  static async create(source: AsyncReadable, offset: number): Promise<BTreeV2GroupOrders> {
     const { all_nodes, header } = await _readBTreeV2(source, offset, (buf, off) => {
       const creationorder = struct.unpack_from("<Q", buf, off)[0];
       return new Map([

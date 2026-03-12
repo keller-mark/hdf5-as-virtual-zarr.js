@@ -4,13 +4,14 @@
  *
  * Key differences from jsfive:
  * - Uses async factory method DataObjects.create(source, offset)
- * - Partial reads via Source.fetch() instead of full file buffer
+ * - Partial reads via AsyncReadable.fetch() instead of full file buffer
  * - get_links(), get_attributes(), get_data() are async
  * - buf/bufStart design: buf covers all message block ranges,
  *   bufStart = absolute offset where buf starts (= object header offset)
  */
 
-import type { Source } from "../types.js";
+import type { AsyncReadable } from "../types.js";
+import { fetchRange } from "../types.js";
 import { DatatypeMessage } from "./datatype-msg.js";
 import {
   _structure_size,
@@ -178,10 +179,10 @@ export class DataObjects {
   _chunks: number[] | null;
   _chunk_dims: number | null;
   _chunk_address: number | null;
-  private _source: Source;
+  private _source: AsyncReadable;
 
   private constructor(
-    source: Source,
+    source: AsyncReadable,
     buf: ArrayBuffer,
     bufStart: number,
     msgs: Map<string, any>[],
@@ -204,8 +205,8 @@ export class DataObjects {
     this._chunk_address = null;
   }
 
-  static async create(source: Source, offset: number): Promise<DataObjects> {
-    const peekBuf = await source.fetch(offset, 1);
+  static async create(source: AsyncReadable, offset: number): Promise<DataObjects> {
+    const peekBuf = await fetchRange(source, offset, 1);
     const versionHint = struct.unpack_from("<B", peekBuf, 0)[0];
 
     let result: {
@@ -238,7 +239,7 @@ export class DataObjects {
   // ────────── V1 parsing ──────────
 
   private static async _parseV1(
-    source: Source,
+    source: AsyncReadable,
     offset: number
   ): Promise<{
     buf: ArrayBuffer;
@@ -247,7 +248,7 @@ export class DataObjects {
     msg_data: ArrayBuffer;
     header: Map<string, any>;
   }> {
-    const headerBuf = await source.fetch(offset, OBJECT_HEADER_V1_SIZE);
+    const headerBuf = await fetchRange(source, offset, OBJECT_HEADER_V1_SIZE);
     const header = _unpack_struct_from(OBJECT_HEADER_V1, headerBuf, 0);
     assert(header.get("version") === 1);
 
@@ -264,7 +265,7 @@ export class DataObjects {
 
     while (blockQueue.length > 0) {
       const { absOffset, size } = blockQueue.shift()!;
-      const data = await source.fetch(absOffset, size);
+      const data = await fetchRange(source, absOffset, size);
       allBlocks.push({ absOffset, size, data });
 
       // Scan messages to find continuation blocks
@@ -344,7 +345,7 @@ export class DataObjects {
   // ────────── V2 parsing ──────────
 
   private static async _parseV2(
-    source: Source,
+    source: AsyncReadable,
     offset: number
   ): Promise<{
     buf: ArrayBuffer;
@@ -355,7 +356,7 @@ export class DataObjects {
   }> {
     // Fetch enough for the full V2 header (max 32 bytes)
     const peekSize = 64;
-    const peekBuf = await source.fetch(offset, peekSize);
+    const peekBuf = await fetchRange(source, offset, peekSize);
 
     const { header, creation_order_size, block_offset: first_block_offset } =
       DataObjects._parseV2Header(peekBuf, 0, offset);
@@ -376,7 +377,7 @@ export class DataObjects {
       if (absOffset >= offset && absOffset + size <= offset + peekSize) {
         data = peekBuf.slice(absOffset - offset, absOffset - offset + size);
       } else {
-        data = await source.fetch(absOffset, size);
+        data = await fetchRange(source, absOffset, size);
       }
       allBlocks.push({ absOffset, size, data });
 
@@ -1168,7 +1169,7 @@ export class DataObjects {
     if (!Array.isArray(dtype)) {
       if (/[<>=!@|]?(i|u|f|S)(\d*)/.test(dtype)) {
         const [item_getter, item_is_big_endian, item_size] = dtype_getter(dtype);
-        const dataBuf = await this._source.fetch(data_offset, fullsize * item_size);
+        const dataBuf = await fetchRange(this._source, data_offset, fullsize * item_size);
         const view = new DataView64(dataBuf, 0);
         const output: any[] = new Array(fullsize);
         for (let i = 0; i < fullsize; i++) {
@@ -1186,14 +1187,14 @@ export class DataObjects {
         if (size !== 8) {
           throw new Error("Unsupported Reference type size: " + size);
         }
-        const dataBuf = await this._source.fetch(data_offset, fullsize * 8);
+        const dataBuf = await fetchRange(this._source, data_offset, fullsize * 8);
         return [dataBuf];
       } else if (dtype_class === "VLEN_STRING") {
         const character_set = dtype[2];
         const encoding = character_set === 0 ? "ascii" : "utf-8";
         const decoder = new TextDecoder(encoding);
         // Fetch all 16-byte vlen refs at once
-        const refBuf = await this._source.fetch(data_offset, fullsize * 16);
+        const refBuf = await fetchRange(this._source, data_offset, fullsize * 16);
         const output: string[] = new Array(fullsize);
         for (let i = 0; i < fullsize; i++) {
           const [, vlen_data] = await this._vlen_size_and_data(refBuf, i * 16);
@@ -1242,7 +1243,7 @@ export class DataObjects {
         const chunk_size = node.keys[ik].chunk_size;
 
         // Fetch chunk data
-        const chunkBuf = await this._source.fetch(addr, chunk_size);
+        const chunkBuf = await fetchRange(this._source, addr, chunk_size);
         const nItems = chunk_size / 16; // each VLEN ref is 16 bytes
 
         for (let i = 0; i < nItems; i++) {

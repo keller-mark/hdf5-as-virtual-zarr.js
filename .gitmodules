@@ -7,3 +7,6 @@
 [submodule "chunkd"]
 	path = chunkd
 	url = https://github.com/blacha/chunkd
+[submodule "zarrita.js"]
+	path = zarrita.js
+	url = https://github.com/manzt/zarrita.js.git

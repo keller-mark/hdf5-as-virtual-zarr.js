@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { open, get, root as zarrRoot } from "zarrita";
 import ReferenceStore from "@zarrita/storage/ref";
 import { SingleHdf5ToZarr, refSpecToConsolidatedMetadata } from "../src/index.js";
-import type { Source } from "../src/types.js";
+import type { AsyncReadable } from "../src/types.js";
 import { resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -51,27 +51,30 @@ function loadZarrJsonStore(fixtureName: string) {
 }
 
 /**
- * Simple in-memory Source implementation for tests, compatible with @chunkd/source.
+ * Simple in-memory AsyncReadable implementation for tests.
  */
-class SourceMemory implements Source {
-  type = "memory";
-  url: URL;
+class SourceMemory implements AsyncReadable {
   data: ArrayBuffer;
-  metadata: { size: number };
 
-  constructor(url: string, buffer: ArrayBuffer) {
-    this.url = new URL(url);
+  constructor(_url: string, buffer: ArrayBuffer) {
     this.data = buffer;
-    this.metadata = { size: buffer.byteLength };
   }
 
-  async head() {
-    return { size: this.data.byteLength };
+  async get() {
+    return new Uint8Array(this.data);
   }
 
-  async fetch(offset: number, length?: number): Promise<ArrayBuffer> {
-    if (offset < 0) offset = this.data.byteLength + offset;
-    return this.data.slice(offset, length == null ? undefined : offset + length);
+  async getRange(_key: string, range: { offset: number; length: number } | { suffixLength: number }): Promise<Uint8Array> {
+    let offset: number;
+    let length: number;
+    if ("suffixLength" in range) {
+      offset = this.data.byteLength - range.suffixLength;
+      length = range.suffixLength;
+    } else {
+      offset = range.offset;
+      length = range.length;
+    }
+    return new Uint8Array(this.data, offset, length);
   }
 }
 

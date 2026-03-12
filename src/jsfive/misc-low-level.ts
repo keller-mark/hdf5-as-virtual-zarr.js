@@ -3,11 +3,12 @@
  * SuperBlock, Heap, SymbolTable, GlobalHeap, FractalHeap.
  *
  * All classes use async factory methods (static async create())
- * to read byte ranges via Source.fetch() instead of synchronous
+ * to read byte ranges via AsyncReadable.fetch() instead of synchronous
  * slicing of a monolithic ArrayBuffer.
  */
 
-import type { Source } from "../types.js";
+import type { AsyncReadable } from "../types.js";
+import { fetchRange } from "../types.js";
 import {
   _structure_size,
   _padded_size,
@@ -143,10 +144,10 @@ export class SuperBlock {
   _end_of_sblock: number;
   _root_symbol_table: SymbolTable | null = null;
 
-  private _source: Source;
+  private _source: AsyncReadable;
 
   private constructor(
-    source: Source,
+    source: AsyncReadable,
     contents: Map<string, any>,
     version: number,
     end_of_sblock: number
@@ -157,10 +158,10 @@ export class SuperBlock {
     this._end_of_sblock = end_of_sblock;
   }
 
-  static async create(source: Source, offset: number): Promise<SuperBlock> {
+  static async create(source: AsyncReadable, offset: number): Promise<SuperBlock> {
     // Read enough bytes for the larger superblock variant
     const needed = Math.max(SUPERBLOCK_V0_SIZE, SUPERBLOCK_V2_V3_SIZE);
-    const buf = await source.fetch(offset, needed);
+    const buf = await fetchRange(source, offset, needed);
 
     const version_hint = struct.unpack_from("<B", buf, 8)[0];
     let contents: Map<string, any>;
@@ -215,16 +216,16 @@ export class Heap {
     this.data = data;
   }
 
-  static async create(source: Source, offset: number): Promise<Heap> {
+  static async create(source: AsyncReadable, offset: number): Promise<Heap> {
     const headerSize = _structure_size(LOCAL_HEAP);
-    const hBuf = await source.fetch(offset, headerSize);
+    const hBuf = await fetchRange(source, offset, headerSize);
     const local_heap = _unpack_struct_from(LOCAL_HEAP, hBuf, 0);
     assert(local_heap.get("signature") === "HEAP");
     assert(local_heap.get("version") === 0);
 
     const data_offset = local_heap.get("address_of_data_segment");
     const seg_size = local_heap.get("data_segment_size");
-    const heap_data = await source.fetch(data_offset, seg_size);
+    const heap_data = await fetchRange(source, data_offset, seg_size);
     local_heap.set("heap_data", heap_data);
 
     return new Heap(local_heap, heap_data);
@@ -255,7 +256,7 @@ export class SymbolTable {
   }
 
   static async create(
-    source: Source,
+    source: AsyncReadable,
     offset: number,
     root = false
   ): Promise<SymbolTable> {
@@ -265,7 +266,7 @@ export class SymbolTable {
     if (root) {
       node = new Map([["symbols", 1]]);
     } else {
-      const nodeBuf = await source.fetch(offset, SYMBOL_TABLE_NODE_SIZE);
+      const nodeBuf = await fetchRange(source, offset, SYMBOL_TABLE_NODE_SIZE);
       node = _unpack_struct_from(SYMBOL_TABLE_NODE, nodeBuf, 0);
       if (node.get("signature") !== "SNOD") throw new Error("incorrect node type");
       readOffset = offset + SYMBOL_TABLE_NODE_SIZE;
@@ -273,7 +274,7 @@ export class SymbolTable {
 
     const n_symbols = node.get("symbols");
     const entryBytes = n_symbols * SYMBOL_TABLE_ENTRY_SIZE;
-    const entryBuf = await source.fetch(readOffset, entryBytes);
+    const entryBuf = await fetchRange(source, readOffset, entryBytes);
 
     const entries: Map<string, any>[] = [];
     let localOff = 0;
@@ -331,12 +332,12 @@ export class GlobalHeap {
     this.heap_data = heap_data;
   }
 
-  static async create(source: Source, offset: number): Promise<GlobalHeap> {
-    const hBuf = await source.fetch(offset, GLOBAL_HEAP_HEADER_SIZE);
+  static async create(source: AsyncReadable, offset: number): Promise<GlobalHeap> {
+    const hBuf = await fetchRange(source, offset, GLOBAL_HEAP_HEADER_SIZE);
     const header = _unpack_struct_from(GLOBAL_HEAP_HEADER, hBuf, 0);
 
     const heap_data_size = header.get("collection_size") - GLOBAL_HEAP_HEADER_SIZE;
-    const heap_data = await source.fetch(
+    const heap_data = await fetchRange(source,
       offset + GLOBAL_HEAP_HEADER_SIZE,
       heap_data_size
     );
@@ -405,9 +406,9 @@ export class FractalHeap {
     this._indirect_nrows_sub = indirect_nrows_sub;
   }
 
-  static async create(source: Source, offset: number): Promise<FractalHeap> {
+  static async create(source: AsyncReadable, offset: number): Promise<FractalHeap> {
     const headerSize = _structure_size(FRACTAL_HEAP_HEADER);
-    const hBuf = await source.fetch(offset, headerSize);
+    const hBuf = await fetchRange(source, offset, headerSize);
     const header = _unpack_struct_from(FRACTAL_HEAP_HEADER, hBuf, 0);
     assert(header.get("signature") === "FRHP");
     assert(header.get("version") === 0);
@@ -555,7 +556,7 @@ export class FractalHeap {
     offset: number,
     block_size: number
   ): Promise<ArrayBuffer> {
-    const data = await ctx.source.fetch(offset, block_size);
+    const data = await fetchRange(ctx.source, offset, block_size);
     const header = _unpack_struct_from(ctx.direct_block_header, data, 0);
     assert(header.get("signature") === "FHDB");
     return data;
@@ -566,7 +567,7 @@ export class FractalHeap {
     offset: number,
     nrows: number
   ): AsyncGenerator<ArrayBuffer> {
-    const ibHdrBuf = await ctx.source.fetch(offset, ctx.indirect_block_header_size);
+    const ibHdrBuf = await fetchRange(ctx.source, offset, ctx.indirect_block_header_size);
     const header = _unpack_struct_from(ctx.indirect_block_header, ibHdrBuf, 0);
     let readOff = offset + ctx.indirect_block_header_size;
     assert(header.get("signature") === "FHIB");
@@ -582,7 +583,7 @@ export class FractalHeap {
 
     // Read addresses for direct blocks
     const addrBytes = (ndirect + nindirect) * 8;
-    const addrBuf = await ctx.source.fetch(readOff, addrBytes);
+    const addrBuf = await fetchRange(ctx.source, readOff, addrBytes);
     let addrOff = 0;
 
     const direct_blocks: [number, number][] = [];

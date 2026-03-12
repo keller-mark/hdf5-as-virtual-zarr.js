@@ -1,31 +1,37 @@
 import { SingleHdf5ToZarr } from "hdf5-as-virtual-zarr";
 
 /**
- * Source implementation that reads from a browser File using slice().
+ * AsyncReadable implementation that reads from a browser File using slice().
  * Only the requested byte ranges are read — no full-file load needed.
  */
 class FileSource {
-  type = "file";
-
   constructor(file) {
     this.file = file;
-    this.url = new URL("file:///" + encodeURIComponent(file.name));
-    this.metadata = { size: file.size };
-    this._fetchCalls = [];
+    this._getRangeCalls = [];
   }
 
-  async fetch(offset, length) {
-    const blob = length !== undefined
-      ? this.file.slice(offset, offset + length)
-      : this.file.slice(offset);
+  async get() {
+    return new Uint8Array(await this.file.arrayBuffer());
+  }
+
+  async getRange(_key, range) {
+    let offset, length;
+    if ("suffixLength" in range) {
+      offset = this.file.size - range.suffixLength;
+      length = range.suffixLength;
+    } else {
+      offset = range.offset;
+      length = range.length;
+    }
+    const blob = this.file.slice(offset, offset + length);
     const ab = await blob.arrayBuffer();
-    this._fetchCalls.push({ offset, length: ab.byteLength });
-    return ab;
+    this._getRangeCalls.push({ offset, length: ab.byteLength });
+    return new Uint8Array(ab);
   }
 
   uniqueBytesFetched() {
-    if (this._fetchCalls.length === 0) return 0;
-    const intervals = this._fetchCalls
+    if (this._getRangeCalls.length === 0) return 0;
+    const intervals = this._getRangeCalls
       .map(({ offset, length }) => [offset, offset + length])
       .sort((a, b) => a[0] - b[0]);
     let total = 0;

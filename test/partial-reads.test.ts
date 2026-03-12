@@ -3,7 +3,7 @@ import { resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import type { Source } from "../src/types.js";
+import type { AsyncReadable } from "../src/types.js";
 import { SingleHdf5ToZarr } from "../src/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,25 +11,33 @@ const __dirname = dirname(__filename);
 const fixturesDir = resolve(__dirname, "fixtures");
 
 /**
- * Records every fetch() call so tests can verify partial read behavior.
+ * Records every getRange() call so tests can verify partial read behavior.
  */
-class SourceSpy implements Source {
-  type = "memory";
-  url: URL;
+class SourceSpy implements AsyncReadable {
   readonly fileSize: number;
   readonly fetchCalls: Array<{ offset: number; length: number }> = [];
   private ab: ArrayBuffer;
 
-  constructor(url: string, ab: ArrayBuffer) {
-    this.url = new URL(url);
+  constructor(_url: string, ab: ArrayBuffer) {
     this.ab = ab;
     this.fileSize = ab.byteLength;
   }
 
-  async fetch(offset: number, length?: number): Promise<ArrayBuffer> {
-    const slice = length === undefined
-      ? this.ab.slice(offset)
-      : this.ab.slice(offset, offset + length);
+  async get(): Promise<Uint8Array> {
+    return new Uint8Array(this.ab);
+  }
+
+  async getRange(_key: string, range: { offset: number; length: number } | { suffixLength: number }): Promise<Uint8Array> {
+    let offset: number;
+    let length: number;
+    if ("suffixLength" in range) {
+      offset = this.ab.byteLength - range.suffixLength;
+      length = range.suffixLength;
+    } else {
+      offset = range.offset;
+      length = range.length;
+    }
+    const slice = new Uint8Array(this.ab, offset, length);
     this.fetchCalls.push({ offset, length: slice.byteLength });
     return slice;
   }
