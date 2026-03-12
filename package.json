@@ -34,7 +34,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@zarrita/storage": "^0.1.4"
+    "@zarrita/storage": "^0.1.4",
+    "reference-spec-reader": "^0.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
