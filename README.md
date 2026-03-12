@@ -31,3 +31,9 @@ pnpm run test
 ```sh
 pnpm run build
 ```
+
+### Publish
+
+```sh
+pnpm publish --filter "hdf5-as-virtual-zarr"
+```
