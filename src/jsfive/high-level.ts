@@ -6,7 +6,7 @@
  * delegating byte-range reads to Source.
  */
 
-import type { Source } from "../index.js";
+import type { Source } from "../types.js";
 import { DataObjects } from "./dataobjects.js";
 import { SuperBlock } from "./misc-low-level.js";
 

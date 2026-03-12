@@ -7,7 +7,7 @@
  * we only need chunk location metadata for the reference spec.
  */
 
-import type { Source } from "../index.js";
+import type { Source } from "../types.js";
 import {
   _unpack_struct_from,
   _structure_size,

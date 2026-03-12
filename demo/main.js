@@ -1,4 +1,4 @@
-import { SingleHdf5ToZarr } from "hdf5-to-zarr";
+import { SingleHdf5ToZarr } from "hdf5-to-virtual-zarr";
 
 /**
  * Source implementation that reads from a browser File using slice().

@@ -1,5 +1,5 @@
 {
-  "name": "hdf5-to-zarr",
+  "name": "hdf5-to-virtual-zarr",
   "version": "0.1.0",
   "description": "Given an input HDF5 file URL, generate a Zarr References Specification JSON output.",
   "type": "module",
@@ -25,13 +25,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/keller-mark/hdf5-to-zarr.js.git"
+    "url": "git+https://github.com/keller-mark/hdf5-to-virtual-zarr.git"
   },
   "keywords": [
     "hdf5",
     "zarr",
-    "kerchunk",
-    "references"
+    "kerchunk"
   ],
   "license": "MIT",
   "dependencies": {},

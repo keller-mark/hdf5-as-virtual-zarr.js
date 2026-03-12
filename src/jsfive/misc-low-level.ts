@@ -7,7 +7,7 @@
  * slicing of a monolithic ArrayBuffer.
  */
 
-import type { Source } from "../index.js";
+import type { Source } from "../types.js";
 import {
   _structure_size,
   _padded_size,

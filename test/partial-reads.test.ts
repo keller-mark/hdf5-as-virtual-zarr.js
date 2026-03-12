@@ -3,7 +3,7 @@ import { resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import type { Source } from "../src/index.js";
+import type { Source } from "../src/types.js";
 import { SingleHdf5ToZarr } from "../src/index.js";
 
 const __filename = fileURLToPath(import.meta.url);

@@ -10,7 +10,7 @@
  *   bufStart = absolute offset where buf starts (= object header offset)
  */
 
-import type { Source } from "../index.js";
+import type { Source } from "../types.js";
 import { DatatypeMessage } from "./datatype-msg.js";
 import {
   _structure_size,

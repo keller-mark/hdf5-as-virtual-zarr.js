@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { open, get, root as zarrRoot } from "zarrita";
 import ReferenceStore from "@zarrita/storage/ref";
 import { SingleHdf5ToZarr, refSpecToConsolidatedMetadata } from "../src/index.js";
-import type { Source } from "../src/index.js";
+import type { Source } from "../src/types.js";
 import { resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
