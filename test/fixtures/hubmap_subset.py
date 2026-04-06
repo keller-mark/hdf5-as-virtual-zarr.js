@@ -16,6 +16,6 @@ from anndata import read_h5ad
 if __name__ == "__main__":
     adata = read_h5ad("secondary_analysis.h5ad")
 
-    small_adata = adata[100, 50].copy()
+    small_adata = adata[0:100, 0:50].copy()
 
     small_adata.write_h5ad("secondary_analysis.subset.h5ad")

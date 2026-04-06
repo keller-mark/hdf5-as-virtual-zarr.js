@@ -54,7 +54,7 @@ export class DatatypeMessage {
     } else if (datatype_class === DATATYPE_OPAQUE) {
       throw new Error("Opaque datatype class not supported.");
     } else if (datatype_class === DATATYPE_COMPOUND) {
-      throw new Error("Compound datatype class not supported.");
+      return this._determine_dtype_compound(datatype_msg);
     } else if (datatype_class === DATATYPE_REFERENCE) {
       return ["REFERENCE", datatype_msg.get("size")];
     } else if (datatype_class === DATATYPE_ENUMERATED) {
@@ -97,6 +97,72 @@ export class DatatypeMessage {
 
   _determine_dtype_string(datatype_msg: Map<string, any>): string {
     return "S" + datatype_msg.get("size").toFixed();
+  }
+
+  _determine_dtype_compound(datatype_msg: Map<string, any>): any[] {
+    const version = (datatype_msg.get("class_and_version") >> 4) & 0x0f;
+    const num_members = datatype_msg.get("class_bit_field_0") |
+                       (datatype_msg.get("class_bit_field_1") << 8);
+    const total_size = datatype_msg.get("size");
+
+    // Return minimal descriptor if we can't parse members — processDataset will skip this anyway
+    try {
+      const members: Array<{name: string; dtype: any; offset: number}> = [];
+      const view = new DataView(this.buf);
+
+      for (let i = 0; i < num_members; i++) {
+        // Read null-terminated name
+        let nameEnd = this.offset;
+        while (nameEnd < this.buf.byteLength && view.getUint8(nameEnd) !== 0) {
+          nameEnd++;
+        }
+        const nameBytes = new Uint8Array(this.buf, this.offset, nameEnd - this.offset);
+        const name = new TextDecoder().decode(nameBytes);
+
+        let memberOffset: number;
+
+        if (version === 1) {
+          // Version 1: name padded to 8-byte boundary
+          const nameLenWithNull = nameEnd - this.offset + 1;
+          const paddedLen = Math.ceil(nameLenWithNull / 8) * 8;
+          this.offset += paddedLen;
+
+          // Read byte offset of member (4 bytes)
+          memberOffset = view.getUint32(this.offset, true);
+          this.offset += 4;
+
+          // Skip: dimensionality (1) + reserved (3) + permutation (4) + reserved (4) + dim sizes (16) = 28 bytes
+          this.offset += 28;
+        } else if (version === 2) {
+          // Version 2: null-terminated name, no padding
+          this.offset = nameEnd + 1;
+
+          // Read byte offset (4 bytes)
+          memberOffset = view.getUint32(this.offset, true);
+          this.offset += 4;
+        } else {
+          // Version 3: null-terminated name, variable-width offset
+          this.offset = nameEnd + 1;
+
+          const offsetBytes = Math.max(1, Math.ceil(Math.ceil(Math.log2(total_size + 1)) / 8));
+          memberOffset = 0;
+          for (let j = 0; j < offsetBytes; j++) {
+            memberOffset |= view.getUint8(this.offset + j) << (j * 8);
+          }
+          this.offset += offsetBytes;
+        }
+
+        // Parse nested datatype (recursive) — updates this.offset
+        const nestedMsg = new DatatypeMessage(this.buf, this.offset);
+        this.offset = nestedMsg.offset;
+
+        members.push({ name, dtype: nestedMsg.dtype, offset: memberOffset });
+      }
+
+      return ["COMPOUND", members, total_size];
+    } catch {
+      return ["COMPOUND", [], total_size];
+    }
   }
 
   _determine_dtype_vlen(datatype_msg: Map<string, any>): any[] {
