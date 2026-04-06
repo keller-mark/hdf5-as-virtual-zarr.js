@@ -120,18 +120,34 @@ describe("read-anndata", () => {
 
     const nCountsArr = await adata.obs.get("n_counts");
 
-
     assert(!("codes" in nCountsArr), "Was unexpectedly categorical");
     assert(!("indptr" in nCountsArr), "Was unexpectedly sparse");
     assert(!("axisRoot" in nCountsArr), "Was unexpectedly axis_arrays");
 
     expect(nCountsArr.shape).toEqual([100]);
 
-    console.log(nCountsArr.attrs);
+    expect(nCountsArr.attrs).toEqual({
+      _ARRAY_DIMENSIONS: ['phony_dim_0'],
+      'encoding-type': 'array',
+      'encoding-version': '0.2.0'
+    });
 
     const nCounts = await get(nCountsArr, [null]);
 
     expect(nCounts.data.length).toEqual(100);
+
+    expect(Array.from(nCounts.data).slice(0, 10)).toEqual([
+      3851.99609375,
+      1028.78173828125,
+      155.79998779296875,
+      84.9999771118164,
+      158.83334350585938,
+      561,
+      126.7499771118164,
+      149.92855834960938,
+      11.98719596862793,
+      223.49998474121094
+    ]);
 
   });
 });

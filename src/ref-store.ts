@@ -98,7 +98,7 @@ export class ComposableReferenceStore implements AsyncReadable<RequestInit> {
 
     const opts_for_get = this.#overrides ? merge_init(this.#overrides, opts) : opts;
 
-		return this.#internal_store.getRange(key, { offset, length: size }, opts_for_get);
+		return this.#internal_store.getRange("/" as AbsolutePath, { offset, length: size }, opts_for_get);
   }
 
   // TODO: does it make sense to support getRange here? get already calls getRange on the internal store...
