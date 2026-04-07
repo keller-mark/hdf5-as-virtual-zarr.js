@@ -1,6 +1,6 @@
 {
   "name": "hdf5-as-virtual-zarr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Given an input HDF5 file URL, generate a Zarr References Specification JSON output.",
   "type": "module",
   "main": "dist/index.js",
