@@ -1091,6 +1091,10 @@ export class DataObjects {
           const [vlen, vlen_data] = await this._vlen_size_and_data(buf, offset);
           value[i] = await this._attr_value(base_dtype, vlen_data, vlen, 0);
           offset += 16;
+        } else if (dtype_class === "COMPOUND") {
+          const total_size = dtype[2] as number;
+          value[i] = buf.slice(offset, offset + total_size);
+          offset += total_size;
         } else {
           throw new Error("NotImplementedError: unsupported dtype class " + dtype_class);
         }
@@ -1199,6 +1203,14 @@ export class DataObjects {
         for (let i = 0; i < fullsize; i++) {
           const [, vlen_data] = await this._vlen_size_and_data(refBuf, i * 16);
           output[i] = decoder.decode(vlen_data);
+        }
+        return output;
+      } else if (dtype_class === "COMPOUND") {
+        const total_size = dtype[2] as number;
+        const dataBuf = await fetchRange(this._source, data_offset, fullsize * total_size);
+        const output: ArrayBuffer[] = new Array(fullsize);
+        for (let i = 0; i < fullsize; i++) {
+          output[i] = dataBuf.slice(i * total_size, (i + 1) * total_size);
         }
         return output;
       } else {

@@ -6,6 +6,7 @@ demo-dist/
 *.adata.zarr/
 test/fixtures/*.h5ad
 !test/fixtures/mouse_liver.h5ad
+!test/fixtures/secondary_analysis.subset.h5ad
 test/fixtures/*.refspec.json
 test/fixtures/*.zmetadata.json
 test/fixtures/*.zarr.json

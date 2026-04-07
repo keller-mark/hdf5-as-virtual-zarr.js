@@ -528,6 +528,12 @@ export class SingleHdf5ToZarr {
     const isVlen = Array.isArray(rawDtype) &&
       (rawDtype[0] === "VLEN_STRING" || rawDtype[0] === "VLEN_SEQUENCE");
     const isFixedString = typeof rawDtype === "string" && /^S\d+/.test(rawDtype);
+    const isCompound = Array.isArray(rawDtype) && rawDtype[0] === "COMPOUND";
+
+    // Compound datasets cannot be represented in Zarr; skip them
+    if (isCompound) {
+      return;
+    }
 
     const dtype = jsfiveDtypeToZarr(rawDtype);
     const chunks = dataobjects.chunks || [...shape];

@@ -93,12 +93,14 @@ export class ComposableReferenceStore implements AsyncReadable<RequestInit> {
     let [urlOrNull, offset, size] = ref;
 
     if (offset === undefined || size === undefined || !this.#internal_store.getRange) {
+      // TODO: is this correct? should it be .get("/", opts) instead?
+      // TODO: throw error in this case?
       return this.#internal_store.get(key, opts);
     }
 
     const opts_for_get = this.#overrides ? merge_init(this.#overrides, opts) : opts;
 
-		return this.#internal_store.getRange(key, { offset, length: size }, opts_for_get);
+		return this.#internal_store.getRange("/", { offset, length: size }, opts_for_get);
   }
 
   // TODO: does it make sense to support getRange here? get already calls getRange on the internal store...
