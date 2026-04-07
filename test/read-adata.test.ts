@@ -56,7 +56,6 @@ describe("read-anndata", () => {
     const store = await HdfStore.fromStore(internalStore);
 
     const group = await zarr.open(store, { kind: "group" });
-    console.log(group.attrs);
 
     expect(group.attrs).toEqual({
       'encoding-type': 'anndata',
@@ -147,6 +146,51 @@ describe("read-anndata", () => {
       149.92855834960938,
       11.98719596862793,
       223.49998474121094
+    ]);
+
+    // Check obsm/X_spatial contents
+    const spatialCoordsArr = await adata.obsm.get("X_spatial");
+
+    assert(!("codes" in spatialCoordsArr), "Was unexpectedly categorical");
+    assert(!("indptr" in spatialCoordsArr), "Was unexpectedly sparse");
+    assert(!("axisRoot" in spatialCoordsArr), "Was unexpectedly axis_arrays");
+
+    expect(spatialCoordsArr.shape).toEqual([100, 2]);
+
+    const spatialCoordsSubset = await get(spatialCoordsArr, [zarr.slice(0, 5), zarr.slice(0, 2)]);
+
+    expect(spatialCoordsSubset.data.length).toEqual(10);
+    expect(Array.from(spatialCoordsSubset.data)).toEqual([
+      1269.3, 2151.6,
+      2474.5, 3077.9,
+      3273.5, 2208.6,
+      3705.2, 3732.6,
+      2891.1, 2109.7
+    ]);
+
+    // Check /X contents
+    const exprMatrix = adata.X;
+    assert(exprMatrix, "Was unexpectedly undefined");
+    assert(!("indptr" in exprMatrix), "Was unexpectedly sparse");
+    expect(exprMatrix.shape).toEqual([100, 50]);
+
+    const exprMatrixSubset = await get(exprMatrix, [zarr.slice(0, 3), zarr.slice(0, 4)]);
+    expect(exprMatrixSubset.data.length).toEqual(12);
+    expect(exprMatrixSubset.shape).toEqual([3, 4]);
+    expect(exprMatrixSubset.stride).toEqual([4, 1]);
+    expect(Array.from(exprMatrixSubset.data)).toEqual([
+      -0.08510720729827881,
+      -0.09748774766921997,
+      -0.08572810143232346,
+      -0.1176939606666565,
+      -0.08510720729827881,
+      -0.09748774766921997,
+      -0.08572810143232346,
+      -0.1176939606666565,
+      -0.08510720729827881,
+      -0.09748774766921997,
+      -0.08572810143232346,
+      -0.1176939606666565
     ]);
 
   });
