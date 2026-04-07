@@ -4,9 +4,8 @@ import { resolve, dirname, join } from "path";
 
 import * as zarr from 'zarrita';
 import FileSystemStore from '@zarrita/storage/fs';
-import { HdfStore } from "hdf5-as-virtual-zarr";
-import { readZarr, get, readElem } from 'anndata.js';
-
+import { HdfStore } from "../src/index.js";
+import { readZarr, get } from 'anndata.js';
 
 
 const __filename = fileURLToPath(import.meta.url);
