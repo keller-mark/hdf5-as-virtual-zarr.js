@@ -1,5 +1,5 @@
 import { parse } from "reference-spec-reader";
-import type { AbsolutePath, AsyncReadable } from "@zarrita/storage";
+import type { AbsolutePath, AsyncReadable, GetOptions } from "@zarrita/storage";
 
 // Copied from @zarrita-storage/src/util.ts
 function strip_prefix<Path extends AbsolutePath>(
@@ -60,7 +60,7 @@ type ReferenceEntry =
 // Based on @zarrita-storage/src/ref.ts, but with some differences:
 // - `refs` is not a Promise.
 // - An internal store is passed in directly, avoiding any assumptions about where the data is coming from.
-export class ComposableReferenceStore implements AsyncReadable<RequestInit> {
+export class ComposableReferenceStore implements AsyncReadable {
 	#refs: Map<string, ReferenceEntry>;
   #internal_store: AsyncReadable;
 	#overrides: RequestInit | undefined;
@@ -77,7 +77,7 @@ export class ComposableReferenceStore implements AsyncReadable<RequestInit> {
 
 	async get(
 		key: AbsolutePath,
-		opts: RequestInit = {},
+		opts: GetOptions = {},
 	): Promise<Uint8Array | undefined> {
 		let ref = this.#refs.get(strip_prefix(key));
 
@@ -98,7 +98,8 @@ export class ComposableReferenceStore implements AsyncReadable<RequestInit> {
       return this.#internal_store.get(key, opts);
     }
 
-    const opts_for_get = this.#overrides ? merge_init(this.#overrides, opts) : opts;
+    // The internal store (e.g., FetchStore) may accept a full RequestInit at runtime.
+    const opts_for_get = (this.#overrides ? merge_init(this.#overrides, opts) : opts) as GetOptions;
 
 		return this.#internal_store.getRange("/", { offset, length: size }, opts_for_get);
   }

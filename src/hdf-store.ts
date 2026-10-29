@@ -1,7 +1,7 @@
 import { ComposableReferenceStore } from "./ref-store.js";
 import type { AsyncReadable } from "./types.js";
 import { SingleHdf5ToZarr } from "./single-hdf5-to-zarr.js";
-import type { AbsolutePath, RangeQuery } from "@zarrita/storage";
+import type { AbsolutePath, GetOptions, RangeQuery } from "@zarrita/storage";
 
 export class HdfStore implements AsyncReadable {
   private refStore: ComposableReferenceStore;
@@ -10,7 +10,7 @@ export class HdfStore implements AsyncReadable {
     this.refStore = refStore;
   }
 
-  async get(key: AbsolutePath, opts?: RequestInit): Promise<Uint8Array | undefined> {
+  async get(key: AbsolutePath, opts?: GetOptions): Promise<Uint8Array | undefined> {
     return this.refStore.get(key, opts);
   }
 
