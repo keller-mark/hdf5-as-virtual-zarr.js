@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { open, get, root as zarrRoot } from "zarrita";
+import { open, get, root as zarrRoot, defineStoreExtension } from "zarrita";
 import ReferenceStore from "@zarrita/storage/ref";
 import { SingleHdf5ToZarr, refSpecToConsolidatedMetadata } from "../src/index.js";
 import type { AsyncReadable } from "../src/types.js";
@@ -24,30 +24,43 @@ function base64Decode(encoded: string): Uint8Array {
  * Create a store from the JSON map contents produced by directory-to-memory-store.mjs.
  * From vitessce base64-store.ts.
  */
-function createStoreFromMapContents(mapContents: [string, string][]) {
+function createStoreFromMapContents(mapContents: [string, string][]): AsyncReadable {
   const map = new Map(mapContents);
-  return new Proxy(map, {
-    get: (target, prop) => {
-      if (prop === 'get') {
-        return (key: string) => {
-          const encodedVal = target.get(key);
-          if (encodedVal) {
-            return base64Decode(encodedVal);
-          }
-          return undefined;
-        };
+  return {
+    async get(key: string) {
+      const encodedVal = map.get(key);
+      if (encodedVal) {
+        return base64Decode(encodedVal);
       }
-      return Reflect.get(target, prop);
+      return undefined;
     },
-  });
+  };
 }
+
+/**
+ * Store extension that implements getRange by slicing the result of get.
+ * zarrita >= 0.7 requires getRange to read sharded (zarr v3) arrays.
+ * From vitessce base-getrange.ts.
+ */
+const withGetRange = defineStoreExtension((innerStore: AsyncReadable) => ({
+  async getRange(
+    ...[key, range, opts]: Parameters<NonNullable<AsyncReadable["getRange"]>>
+  ): Promise<Uint8Array | undefined> {
+    const arr = await innerStore.get(key, opts);
+    if (!arr) return undefined;
+    if ("suffixLength" in range) {
+      return arr.subarray(arr.length - range.suffixLength);
+    }
+    return arr.subarray(range.offset, range.offset + range.length);
+  },
+}));
 
 /**
  * Load a zarr JSON fixture and create a store from it.
  */
 function loadZarrJsonStore(fixtureName: string) {
   const json = JSON.parse(readFileSync(resolve(fixturesDir, fixtureName), "utf-8"));
-  return createStoreFromMapContents(json);
+  return withGetRange(createStoreFromMapContents(json));
 }
 
 /**
