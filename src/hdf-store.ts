@@ -22,11 +22,12 @@ export class HdfStore implements AsyncReadable {
    * with the HDF5 file located at the root key "/". In other words,
    * hdfSource.getRange("/", { offset, length }) should return the
    * corresponding byte range from the HDF5 file.
-   * @returns {Promise<HdfStore>} An HdfStore instance which internally
-   * uses a ReferenceStore and handles the Reference Specification JSON generation.
+   * @returns {Promise<HdfStore>} An HdfStore instance which exposes the HDF5
+   * file as a Zarr v3 hierarchy. Internally uses a ReferenceStore and handles
+   * the Reference Specification JSON generation.
    */
   static async fromStore(hdfSource: AsyncReadable): Promise<HdfStore> {
-    const converter = new SingleHdf5ToZarr(hdfSource, { url: null });
+    const converter = new SingleHdf5ToZarr(hdfSource, { url: null, zarrFormat: 3 });
     const refSpec = await converter.translate();
     const refStore = ComposableReferenceStore.fromSpec(refSpec as unknown as Record<string, unknown>, hdfSource);
     return new HdfStore(refStore);

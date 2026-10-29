@@ -6,6 +6,8 @@ import { struct } from "./jsfive/core.js";
 import { UNDEFINED_ADDRESS } from "./jsfive/misc-low-level.js";
 import type { ZarrArrayMeta, ZarrGroupMeta, ReferenceSpec, AsyncReadable } from "./types.js";
 import { fetchRange } from "./types.js";
+import { jsonStringifySorted, inlineBytes } from "./encoding.js";
+import { refSpecV2ToV3 } from "./ref-spec-v2-to-v3.js";
 
 /**
  * Hidden HDF5 attributes that should not be transferred to Zarr.
@@ -37,6 +39,11 @@ export interface SingleHdf5ToZarrOptions {
    * directly in the output as base64. 0 or negative to disable.
    */
   inlineThreshold?: number;
+  /**
+   * Zarr format of the generated hierarchy. 2 (default) matches kerchunk's output;
+   * 3 produces zarr.json metadata documents and v3 chunk keys.
+   */
+  zarrFormat?: 2 | 3;
 }
 
 /**
@@ -172,35 +179,49 @@ function encodeFillValue(
 }
 
 /**
- * Inline binary data, matching kerchunk's encoding:
- * - If all bytes are < 128 (ASCII-safe), store as a raw character string
- * - Otherwise, encode as "base64:" + base64
+ * Encode a single scalar value as raw bytes in the given Zarr v2 dtype.
+ * Returns undefined if the value or dtype is not supported.
  */
-function inlineBytes(data: Uint8Array): string {
-  let asciiSafe = true;
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] >= 128) {
-      asciiSafe = false;
-      break;
-    }
+function encodeScalar(value: unknown, dtype: string): Uint8Array | undefined {
+  if (value === null || value === undefined) return undefined;
+
+  const strMatch = dtype.match(/^\|S(\d+)$/);
+  if (strMatch) {
+    const out = new Uint8Array(parseInt(strMatch[1], 10));
+    out.set(new TextEncoder().encode(String(value)).subarray(0, out.length));
+    return out;
   }
 
-  if (asciiSafe) {
-    let result = "";
-    for (let i = 0; i < data.length; i++) {
-      result += String.fromCharCode(data[i]);
-    }
-    return result;
-  }
+  const match = dtype.match(/^([<>|])([iuf])(\d+)$/);
+  if (!match) return undefined;
+  const [, endian, kind, sizeStr] = match;
+  const size = parseInt(sizeStr, 10);
+  const littleEndian = endian !== ">";
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  const num = Number(value);
 
-  if (typeof Buffer !== "undefined") {
-    return "base64:" + Buffer.from(data).toString("base64");
+  if (kind === "f") {
+    if (size === 4) view.setFloat32(0, num, littleEndian);
+    else if (size === 8) view.setFloat64(0, num, littleEndian);
+    else return undefined;
+  } else if (size === 1) {
+    if (kind === "i") view.setInt8(0, num);
+    else view.setUint8(0, num);
+  } else if (size === 2) {
+    if (kind === "i") view.setInt16(0, num, littleEndian);
+    else view.setUint16(0, num, littleEndian);
+  } else if (size === 4) {
+    if (kind === "i") view.setInt32(0, num, littleEndian);
+    else view.setUint32(0, num, littleEndian);
+  } else if (size === 8) {
+    const big = BigInt(typeof value === "bigint" ? value : Math.round(num));
+    if (kind === "i") view.setBigInt64(0, big, littleEndian);
+    else view.setBigUint64(0, big, littleEndian);
+  } else {
+    return undefined;
   }
-  let binary = "";
-  for (let i = 0; i < data.length; i++) {
-    binary += String.fromCharCode(data[i]);
-  }
-  return "base64:" + btoa(binary);
+  return out;
 }
 
 /**
@@ -226,22 +247,6 @@ const JSON2_FILTER = {
   sort_keys: true,
   strict: true,
 };
-
-/**
- * JSON.stringify with keys sorted alphabetically at all levels.
- */
-function jsonStringifySorted(obj: unknown): string {
-  return JSON.stringify(obj, (_key, value) => {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const sorted: Record<string, unknown> = {};
-      for (const k of Object.keys(value).sort()) {
-        sorted[k] = (value as Record<string, unknown>)[k];
-      }
-      return sorted;
-    }
-    return value;
-  });
-}
 
 /**
  * Serialize a ZarrArrayMeta to JSON, matching kerchunk's output.
@@ -442,6 +447,7 @@ export class SingleHdf5ToZarr {
   private h5File!: Hdf5File;
   private url: string | null;
   private inlineThreshold: number;
+  private zarrFormat: 2 | 3;
   private refs: Record<string, string | [string | null, number, number]>;
 
   /**
@@ -455,6 +461,7 @@ export class SingleHdf5ToZarr {
     this.source = source;
     this.url = options.url ?? null;
     this.inlineThreshold = options.inlineThreshold ?? 300;
+    this.zarrFormat = options.zarrFormat ?? 2;
     this.refs = {};
   }
 
@@ -472,10 +479,11 @@ export class SingleHdf5ToZarr {
     // Walk all items recursively
     await this.walkGroup(this.h5File, "");
 
-    return {
+    const refSpec: ReferenceSpec = {
       version: 1,
       refs: this.refs,
     };
+    return this.zarrFormat === 3 ? refSpecV2ToV3(refSpec) : refSpec;
   }
 
   /**
@@ -645,11 +653,10 @@ export class SingleHdf5ToZarr {
     } else {
       try {
         const data = await dataobjects.get_data();
-        if (data !== null && data !== undefined) {
-          const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
-          this.refs[`${path}/0`] = inlineBytes(
-            new Uint8Array(new Float64Array(strings.map(Number)).buffer)
-          );
+        const value = Array.isArray(data) ? data[0] : data;
+        const bytes = encodeScalar(value, dtype);
+        if (bytes) {
+          this.refs[`${path}/0`] = inlineBytes(bytes);
         }
       } catch {
         // Cannot read scalar data
