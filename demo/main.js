@@ -1,4 +1,4 @@
-import { SingleHdf5ToZarr } from "hdf5-as-virtual-zarr";
+import { HdfStore } from "hdf5-as-virtual-zarr";
 
 /**
  * AsyncReadable implementation that reads from a browser File using slice().
@@ -81,7 +81,7 @@ downloadBtn.addEventListener("click", () => {
   const blob = new Blob([jsonResult], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = fileName.replace(/\.[^.]+$/, "") + ".refspec.json";
+  a.download = fileName.replace(/\.[^.]+$/, "") + ".zarr.json";
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 100);
 });
@@ -93,14 +93,14 @@ async function processFile(file) {
   output.style.display = "none";
   output.textContent = "";
   fileName = file.name;
-  status.textContent = "Converting HDF5 → Zarr reference spec…";
+  status.textContent = "Converting HDF5 → Zarr v3 consolidated metadata…";
 
   try {
     const source = new FileSource(file);
-    const converter = new SingleHdf5ToZarr(source, { url: null });
-    const refSpec = await converter.translate();
+    const store = await HdfStore.fromStore(source);
+    const consolidated = store.getConsolidatedMetadata();
 
-    jsonResult = JSON.stringify(refSpec, null, 2);
+    jsonResult = JSON.stringify(consolidated, null, 2);
     output.textContent = jsonResult;
     output.style.display = "block";
     downloadBtn.disabled = false;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { open, get, root as zarrRoot } from "zarrita";
+import { open, get, root as zarrRoot, withConsolidatedMetadata } from "zarrita";
 import { HdfStore } from "../src/hdf-store.js";
 import { SingleHdf5ToZarr } from "../src/single-hdf5-to-zarr.js";
 import { ComposableReferenceStore } from "../src/ref-store.js";
@@ -133,6 +133,38 @@ describe("HdfStore", () => {
       expect(parsed.data_type).toBe("string");
       expect(parsed.codecs).toEqual([{ name: "vlen-utf8" }]);
       expect(parsed.chunk_grid.configuration.chunk_shape).toEqual(parsed.shape);
+    });
+  });
+
+  describe("getConsolidatedMetadata", () => {
+    it("should return the root group with inline metadata for every node", async () => {
+      const source = loadH5adSource("dense.h5ad");
+      const store = await HdfStore.fromStore(source);
+      const consolidated = store.getConsolidatedMetadata();
+      const root = JSON.parse(new TextDecoder().decode(await store.get("/zarr.json")));
+      expect(consolidated.zarr_format).toBe(3);
+      expect(consolidated.node_type).toBe("group");
+      expect(consolidated.attributes).toEqual(root.attributes);
+      expect(consolidated.consolidated_metadata.kind).toBe("inline");
+      expect(consolidated.consolidated_metadata.must_understand).toBe(false);
+      const { metadata } = consolidated.consolidated_metadata;
+      expect(metadata[""]).toBeUndefined();
+      const xMeta = JSON.parse(new TextDecoder().decode(await store.get("/X/zarr.json")));
+      expect(metadata["X"]).toEqual(xMeta);
+      expect(metadata["obs"].node_type).toBe("group");
+      expect(metadata["obs/_index"].node_type).toBe("array");
+    });
+
+    it("should be readable by zarrita withConsolidatedMetadata", async () => {
+      const source = loadH5adSource("dense.h5ad");
+      const store = await HdfStore.fromStore(source);
+      const consolidated = store.getConsolidatedMetadata();
+      const bytes = new TextEncoder().encode(JSON.stringify(consolidated));
+      const rootOnly = {
+        get: async (key: string) => (key === "/zarr.json" ? bytes : store.get(key as `/${string}`)),
+      };
+      const cStore = await withConsolidatedMetadata(rootOnly, { format: "v3" });
+      expect(cStore.contents().map((c) => c.path)).toContain("/X");
     });
   });
 

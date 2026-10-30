@@ -48,6 +48,14 @@ pnpm run test
 pnpm run build
 ```
 
+### Preview demo site
+
+```sh
+pnpm run demo:build
+pnpm run demo:preview
+# Open http://localhost:4173/hdf5-as-virtual-zarr.js/
+```
+
 ### Publish
 
 ```sh
