@@ -25,11 +25,16 @@ export interface ZarrGroupMeta {
 }
 
 /**
+ * A single entry in a reference spec: inline data, or [url, offset, length].
+ */
+export type ReferenceEntry = string | [string | null, number, number];
+
+/**
  * Reference spec v1 output.
  */
 export interface ReferenceSpec {
   version: 1;
-  refs: Record<string, string | [string | null, number, number]>;
+  refs: Record<string, ReferenceEntry>;
 }
 
 /**

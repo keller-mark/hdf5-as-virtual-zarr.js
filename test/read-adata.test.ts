@@ -125,10 +125,10 @@ describe("read-anndata", () => {
     expect(nCountsArr.shape).toEqual([100]);
 
     expect(nCountsArr.attrs).toEqual({
-      _ARRAY_DIMENSIONS: ['phony_dim_0'],
       'encoding-type': 'array',
       'encoding-version': '0.2.0'
     });
+    expect(nCountsArr.dimensionNames).toEqual(['phony_dim_0']);
 
     const nCounts = await get(nCountsArr, [null]);
 

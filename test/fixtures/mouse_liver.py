@@ -1,11 +1,12 @@
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.11,<3.14"
 # dependencies = [
 #     "anndata>=0.11",
 #     "kerchunk",
 #     "numpy>=1,<3",
 #     "pandas>=2,<3",
 #     "scipy",
+#     "typing_extensions",  # scverse-misc 0.1.8 imports it on py3.13 but only declares it for <3.13
 #     "zarr>=2,<3",
 # ]
 # ///
