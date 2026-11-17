@@ -11,7 +11,7 @@
  */
 
 import type { AsyncReadable } from "../types.js";
-import { fetchRange } from "../types.js";
+import { fetchRange, fetchRangeWithReadAhead } from "../types.js";
 import { DatatypeMessage } from "./datatype-msg.js";
 import {
   _structure_size,
@@ -28,6 +28,8 @@ import {
   BTreeV2GroupNames,
   BTreeV2GroupOrders,
 } from "./btree.js";
+import { decodeChunk } from "./filters.js";
+import QuickLRU from "quick-lru";
 import {
   Heap,
   SymbolTable,
@@ -164,6 +166,38 @@ const LINK_INFO_MSG2 = new Map<string, string>([
   ["order_btree_address", "Q"],
 ]);
 
+/**
+ * Bytes read speculatively at an object header's address. Object headers
+ * written by h5py/HDF5 are typically a few hundred bytes, so a single request
+ * usually covers the header and all of its messages.
+ */
+const OBJECT_HEADER_READ_AHEAD = 1024;
+
+/**
+ * Maximum number of global heap collections cached per data object.
+ * (Strings being decoded hold their own references to the collections they
+ * need, so eviction never affects an in-progress read.)
+ */
+const GLOBAL_HEAP_CACHE_SIZE = 256;
+
+/**
+ * Return `size` bytes at `absOffset`, slicing them from `prefix` (which starts
+ * at `prefixOffset`) when fully contained, else fetching them.
+ */
+async function sliceOrFetch(
+  source: AsyncReadable,
+  prefix: ArrayBuffer,
+  prefixOffset: number,
+  absOffset: number,
+  size: number
+): Promise<ArrayBuffer> {
+  const start = absOffset - prefixOffset;
+  if (start >= 0 && start + size <= prefix.byteLength) {
+    return prefix.slice(start, start + size);
+  }
+  return fetchRange(source, absOffset, size);
+}
+
 // ────────── DataObjects ──────────
 
 export class DataObjects {
@@ -172,7 +206,7 @@ export class DataObjects {
   msgs: Map<string, any>[];
   msg_data: ArrayBuffer;
   offset: number;
-  _global_heaps: Map<number, GlobalHeap>;
+  _global_heaps: QuickLRU<number, Promise<GlobalHeap>>;
   _header: Map<string, any>;
   _filter_pipeline: Map<string, unknown>[] | null;
   _chunk_params_set: boolean;
@@ -196,7 +230,8 @@ export class DataObjects {
     this.msgs = msgs;
     this.msg_data = msg_data;
     this.offset = offset;
-    this._global_heaps = new Map();
+    // Global heap collections referenced by this object's variable-length data.
+    this._global_heaps = new QuickLRU({ maxSize: GLOBAL_HEAP_CACHE_SIZE });
     this._header = header;
     this._filter_pipeline = null;
     this._chunk_params_set = false;
@@ -206,8 +241,9 @@ export class DataObjects {
   }
 
   static async create(source: AsyncReadable, offset: number): Promise<DataObjects> {
-    const peekBuf = await fetchRange(source, offset, 1);
-    const versionHint = struct.unpack_from("<B", peekBuf, 0)[0];
+    // One request covers the object header prefix and (usually) its first message block.
+    const prefix = await fetchRangeWithReadAhead(source, offset, 1, OBJECT_HEADER_READ_AHEAD);
+    const versionHint = struct.unpack_from("<B", prefix, 0)[0];
 
     let result: {
       buf: ArrayBuffer;
@@ -218,9 +254,9 @@ export class DataObjects {
     };
 
     if (versionHint === 1) {
-      result = await DataObjects._parseV1(source, offset);
+      result = await DataObjects._parseV1(source, offset, prefix);
     } else if (versionHint === "O".charCodeAt(0)) {
-      result = await DataObjects._parseV2(source, offset);
+      result = await DataObjects._parseV2(source, offset, prefix);
     } else {
       throw new Error(`Unknown Data Object Header version hint: ${versionHint}`);
     }
@@ -240,7 +276,8 @@ export class DataObjects {
 
   private static async _parseV1(
     source: AsyncReadable,
-    offset: number
+    offset: number,
+    prefix: ArrayBuffer
   ): Promise<{
     buf: ArrayBuffer;
     bufStart: number;
@@ -248,7 +285,9 @@ export class DataObjects {
     msg_data: ArrayBuffer;
     header: Map<string, any>;
   }> {
-    const headerBuf = await fetchRange(source, offset, OBJECT_HEADER_V1_SIZE);
+    const headerBuf = prefix.byteLength >= OBJECT_HEADER_V1_SIZE
+      ? prefix
+      : await fetchRange(source, offset, OBJECT_HEADER_V1_SIZE);
     const header = _unpack_struct_from(OBJECT_HEADER_V1, headerBuf, 0);
     assert(header.get("version") === 1);
 
@@ -263,26 +302,36 @@ export class DataObjects {
       { absOffset: first_block_offset, size: first_block_size },
     ];
 
+    // Fetch blocks in waves: all continuation blocks discovered in one wave
+    // are requested concurrently (and can be coalesced by the source).
     while (blockQueue.length > 0) {
-      const { absOffset, size } = blockQueue.shift()!;
-      const data = await fetchRange(source, absOffset, size);
-      allBlocks.push({ absOffset, size, data });
+      const wave = blockQueue.splice(0, blockQueue.length);
+      const datas = await Promise.all(
+        wave.map(({ absOffset, size }) =>
+          sliceOrFetch(source, prefix, offset, absOffset, size)
+        )
+      );
+      for (let w = 0; w < wave.length; w++) {
+        const { absOffset, size } = wave[w];
+        const data = datas[w];
+        allBlocks.push({ absOffset, size, data });
 
-      // Scan messages to find continuation blocks
-      let local_offset = 0;
-      while (local_offset + HEADER_MSG_INFO_V1_SIZE <= size) {
-        const msg = _unpack_struct_from(HEADER_MSG_INFO_V1, data, local_offset);
-        const msg_type: number = msg.get("type");
-        const msg_size: number = msg.get("size");
-        const offset_in_block = local_offset + HEADER_MSG_INFO_V1_SIZE;
+        // Scan messages to find continuation blocks
+        let local_offset = 0;
+        while (local_offset + HEADER_MSG_INFO_V1_SIZE <= size) {
+          const msg = _unpack_struct_from(HEADER_MSG_INFO_V1, data, local_offset);
+          const msg_type: number = msg.get("type");
+          const msg_size: number = msg.get("size");
+          const offset_in_block = local_offset + HEADER_MSG_INFO_V1_SIZE;
 
-        if (msg_type === OBJECT_CONTINUATION_MSG_TYPE) {
-          const [fh_off, cont_size] = struct.unpack_from("<QQ", data, offset_in_block);
-          blockQueue.push({ absOffset: fh_off, size: cont_size });
+          if (msg_type === OBJECT_CONTINUATION_MSG_TYPE) {
+            const [fh_off, cont_size] = struct.unpack_from("<QQ", data, offset_in_block);
+            blockQueue.push({ absOffset: fh_off, size: cont_size });
+          }
+
+          if (msg_type === 0 && msg_size === 0) break; // NIL message, stop
+          local_offset += HEADER_MSG_INFO_V1_SIZE + msg_size;
         }
-
-        if (msg_type === 0 && msg_size === 0) break; // NIL message, stop
-        local_offset += HEADER_MSG_INFO_V1_SIZE + msg_size;
       }
     }
 
@@ -296,7 +345,7 @@ export class DataObjects {
       maxEnd = Math.max(maxEnd, b.absOffset + b.size);
     }
     const combined = new Uint8Array(maxEnd - bufStart);
-    combined.set(new Uint8Array(headerBuf), offset - bufStart);
+    combined.set(new Uint8Array(headerBuf, 0, OBJECT_HEADER_V1_SIZE), offset - bufStart);
     for (const b of allBlocks) {
       combined.set(new Uint8Array(b.data), b.absOffset - bufStart);
     }
@@ -346,7 +395,8 @@ export class DataObjects {
 
   private static async _parseV2(
     source: AsyncReadable,
-    offset: number
+    offset: number,
+    prefix: ArrayBuffer
   ): Promise<{
     buf: ArrayBuffer;
     bufStart: number;
@@ -354,9 +404,9 @@ export class DataObjects {
     msg_data: ArrayBuffer;
     header: Map<string, any>;
   }> {
-    // Fetch enough for the full V2 header (max 32 bytes)
-    const peekSize = 64;
-    const peekBuf = await fetchRange(source, offset, peekSize);
+    // The V2 header prefix is at most 32 bytes (more is usually read ahead).
+    const peekBuf = prefix.byteLength >= 64 ? prefix : await fetchRange(source, offset, 64);
+    const peekSize = peekBuf.byteLength;
 
     const { header, creation_order_size, block_offset: first_block_offset } =
       DataObjects._parseV2Header(peekBuf, 0, offset);
@@ -371,14 +421,15 @@ export class DataObjects {
     ];
 
     while (blockQueue.length > 0) {
-      const { absOffset, size } = blockQueue.shift()!;
-      let data: ArrayBuffer;
-      // For small blocks that fit in the peek buffer, reuse it
-      if (absOffset >= offset && absOffset + size <= offset + peekSize) {
-        data = peekBuf.slice(absOffset - offset, absOffset - offset + size);
-      } else {
-        data = await fetchRange(source, absOffset, size);
-      }
+      const wave = blockQueue.splice(0, blockQueue.length);
+      const datas = await Promise.all(
+        wave.map(({ absOffset, size }) =>
+          sliceOrFetch(source, peekBuf, offset, absOffset, size)
+        )
+      );
+      for (let w = 0; w < wave.length; w++) {
+      const { absOffset, size } = wave[w];
+      const data = datas[w];
       allBlocks.push({ absOffset, size, data });
 
       // Scan messages to find continuation blocks
@@ -398,6 +449,7 @@ export class DataObjects {
         if (msg_type === 0 && msg_size === 0) break;
         local_offset += HEADER_MSG_INFO_V2_SIZE + msg_size + creation_order_size;
         if (local_offset >= size - HEADER_MSG_INFO_V2_SIZE) break;
+      }
       }
     }
 
@@ -773,12 +825,17 @@ export class DataObjects {
     btree_address: number,
     heap_address: number
   ): Promise<Record<string, any>> {
-    const btree = await BTreeV1Groups.create(this._source, btree_address);
-    const heap = await Heap.create(this._source, heap_address);
+    const [btree, heap] = await Promise.all([
+      BTreeV1Groups.create(this._source, btree_address),
+      Heap.create(this._source, heap_address),
+    ]);
+    const tables = await Promise.all(
+      btree
+        .symbol_table_addresses()
+        .map((address) => SymbolTable.create(this._source, address))
+    );
     const links: Record<string, any> = {};
-
-    for (const symbol_table_address of btree.symbol_table_addresses()) {
-      const table = await SymbolTable.create(this._source, symbol_table_address);
+    for (const table of tables) {
       table.assign_name(heap);
       Object.assign(links, table.get_links(heap));
     }
@@ -809,15 +866,13 @@ export class DataObjects {
     order_btree_address: number | null,
     heap_address: number
   ): Promise<Record<string, any>> {
-    const heap = await FractalHeap.create(this._source, heap_address);
     const ordered = order_btree_address !== null;
-
-    let btree: BTreeV2GroupNames | BTreeV2GroupOrders;
-    if (ordered) {
-      btree = await BTreeV2GroupOrders.create(this._source, order_btree_address!);
-    } else {
-      btree = await BTreeV2GroupNames.create(this._source, name_btree_address);
-    }
+    const [heap, btree] = await Promise.all([
+      FractalHeap.create(this._source, heap_address),
+      ordered
+        ? BTreeV2GroupOrders.create(this._source, order_btree_address!)
+        : BTreeV2GroupNames.create(this._source, name_btree_address),
+    ]);
 
     const items = new Map<any, [string, any]>();
     for (const record of btree.iter_records()) {
@@ -981,15 +1036,13 @@ export class DataObjects {
       return {};
     }
 
-    const heap = await FractalHeap.create(this._source, fractal_heap_address);
     const ordered = order_btree_address !== null && order_btree_address !== UNDEFINED_ADDRESS;
-
-    let btree: BTreeV2GroupNames | BTreeV2GroupOrders;
-    if (ordered) {
-      btree = await BTreeV2GroupOrders.create(this._source, order_btree_address!);
-    } else {
-      btree = await BTreeV2GroupNames.create(this._source, name_btree_address);
-    }
+    const [heap, btree] = await Promise.all([
+      FractalHeap.create(this._source, fractal_heap_address),
+      ordered
+        ? BTreeV2GroupOrders.create(this._source, order_btree_address!)
+        : BTreeV2GroupNames.create(this._source, name_btree_address),
+    ]);
 
     const attrs: Record<string, any> = {};
     for (const record of btree.iter_records()) {
@@ -1120,19 +1173,62 @@ export class DataObjects {
     const gheap_address: number = gheap_id.get("collection_address");
     assert(gheap_address < Number.MAX_SAFE_INTEGER);
 
-    let gheap: GlobalHeap;
-    if (this._global_heaps.has(gheap_address)) {
-      gheap = this._global_heaps.get(gheap_address)!;
-    } else {
-      gheap = await GlobalHeap.create(this._source, gheap_address);
-      this._global_heaps.set(gheap_address, gheap);
-    }
-
+    const gheap = await this._get_global_heap(gheap_address);
     const vlen_data = gheap.objects.get(gheap_id.get("object_index"));
     if (!vlen_data) {
       throw new Error(`Global heap object not found at index ${gheap_id.get("object_index")}`);
     }
     return [vlen_size, vlen_data];
+  }
+
+  private _get_global_heap(address: number): Promise<GlobalHeap> {
+    let gheap = this._global_heaps.get(address);
+    if (!gheap) {
+      const promise = GlobalHeap.create(this._source, address);
+      promise.catch(() => {
+        if (this._global_heaps.peek(address) === promise) this._global_heaps.delete(address);
+      });
+      this._global_heaps.set(address, promise);
+      gheap = promise;
+    }
+    return gheap;
+  }
+
+  /**
+   * Decode `count` variable-length strings from consecutive 16-byte global heap references
+   * (uint32 length, uint64 collection address, uint32 object index) starting at `offset`.
+   * All referenced global heap collections are fetched concurrently.
+   * Null / missing references decode to "".
+   */
+  private async _read_vlen_strings(
+    buf: ArrayBuffer,
+    offset: number,
+    count: number,
+    decoder: TextDecoder
+  ): Promise<string[]> {
+    const view = new DataView(buf);
+    const refs: { size: number; address: number; index: number }[] = new Array(count);
+    const addresses = new Set<number>();
+    for (let i = 0; i < count; i++) {
+      const o = offset + i * 16;
+      const size = view.getUint32(o, true);
+      const address = Number(view.getBigUint64(o + 4, true));
+      const index = view.getUint32(o + 12, true);
+      refs[i] = { size, address, index };
+      if (size > 0 && address !== 0 && address < Number.MAX_SAFE_INTEGER) {
+        addresses.add(address);
+      }
+    }
+    const heaps = new Map<number, GlobalHeap>();
+    await Promise.all(
+      Array.from(addresses, async (address) => {
+        heaps.set(address, await this._get_global_heap(address));
+      })
+    );
+    return refs.map(({ address, index }) => {
+      const data = heaps.get(address)?.objects.get(index);
+      return data ? decoder.decode(data) : "";
+    });
   }
 
   // ────────── Async: get_data ──────────
@@ -1199,12 +1295,7 @@ export class DataObjects {
         const decoder = new TextDecoder(encoding);
         // Fetch all 16-byte vlen refs at once
         const refBuf = await fetchRange(this._source, data_offset, fullsize * 16);
-        const output: string[] = new Array(fullsize);
-        for (let i = 0; i < fullsize; i++) {
-          const [, vlen_data] = await this._vlen_size_and_data(refBuf, i * 16);
-          output[i] = decoder.decode(vlen_data);
-        }
-        return output;
+        return this._read_vlen_strings(refBuf, 0, fullsize, decoder);
       } else if (dtype_class === "COMPOUND") {
         const total_size = dtype[2] as number;
         const dataBuf = await fetchRange(this._source, data_offset, fullsize * total_size);
@@ -1219,7 +1310,7 @@ export class DataObjects {
     }
   }
 
-  private async _get_chunked_data(msg_offset: number): Promise<any[]> {
+  private async _get_chunked_data(_msg_offset: number): Promise<any[]> {
     this._get_chunk_params();
 
     if (this._chunk_address === null || this._chunk_address === UNDEFINED_ADDRESS) {
@@ -1227,47 +1318,77 @@ export class DataObjects {
     }
 
     const dtype = this.dtype;
-    if (!Array.isArray(dtype) || !/^VLEN/.test(dtype[0])) {
-      // For non-VLEN chunked data, not needed for our use case
-      // (processChunkReferences handles numeric chunked data via BTree directly)
+    if (!Array.isArray(dtype) || dtype[0] !== "VLEN_STRING") {
+      // Only variable-length strings need to be read during translation
+      // (numeric chunked data is referenced by byte offset instead).
       return [];
     }
 
-    const dtype_class = dtype[0];
     const character_set = dtype[2];
     const encoding = character_set === 0 ? "ascii" : "utf-8";
     const decoder = new TextDecoder(encoding);
+
+    const shape = this.shape;
+    const chunkShape = this._chunks!;
+    const ndim = shape.length;
+    const total = shape.reduce((a, b) => a * b, 1);
+    const output: string[] = new Array(total).fill("");
+    const pipeline = this.filter_pipeline;
 
     const chunk_btree = await BTreeV1RawDataChunks.create(
       this._source,
       this._chunk_address,
       this._chunk_dims!
     );
-
-    const output: string[] = [];
-
-    const leafNodes = chunk_btree.all_nodes.get(0);
-    if (!leafNodes) return output;
-
+    const leafNodes = chunk_btree.all_nodes.get(0) ?? [];
+    const chunks: { address: number; size: number; filterMask: number; start: number[] }[] = [];
     for (const node of leafNodes) {
       for (let ik = 0; ik < node.keys.length; ik++) {
-        const addr = node.addresses[ik];
-        const chunk_size = node.keys[ik].chunk_size;
-
-        // Fetch chunk data
-        const chunkBuf = await fetchRange(this._source, addr, chunk_size);
-        const nItems = chunk_size / 16; // each VLEN ref is 16 bytes
-
-        for (let i = 0; i < nItems; i++) {
-          try {
-            const [, vlen_data] = await this._vlen_size_and_data(chunkBuf, i * 16);
-            output.push(decoder.decode(vlen_data));
-          } catch {
-            // skip bad entries
-          }
-        }
+        const key = node.keys[ik];
+        chunks.push({
+          address: node.addresses[ik],
+          size: key.chunk_size,
+          filterMask: key.filter_mask,
+          start: key.chunk_offset.slice(0, ndim),
+        });
       }
     }
+
+    const chunkItems = chunkShape.reduce((a, b) => a * b, 1);
+    // Strides (in elements) of the full array and of a chunk, C order.
+    const strides = new Array(ndim).fill(1);
+    const chunkStrides = new Array(ndim).fill(1);
+    for (let d = ndim - 2; d >= 0; d--) {
+      strides[d] = strides[d + 1] * shape[d + 1];
+      chunkStrides[d] = chunkStrides[d + 1] * chunkShape[d + 1];
+    }
+
+    await Promise.all(
+      chunks.map(async ({ address, size, filterMask, start }) => {
+        const raw = new Uint8Array(await fetchRange(this._source, address, size));
+        const decoded = await decodeChunk(raw, pipeline, filterMask);
+        const nItems = Math.min(chunkItems, Math.floor(decoded.byteLength / 16));
+        const buf = decoded.buffer.slice(
+          decoded.byteOffset,
+          decoded.byteOffset + nItems * 16
+        ) as ArrayBuffer;
+        const strings = await this._read_vlen_strings(buf, 0, nItems, decoder);
+        for (let i = 0; i < nItems; i++) {
+          // Position of item i within the chunk, then within the full array.
+          let flat = 0;
+          let inBounds = true;
+          for (let d = 0; d < ndim; d++) {
+            const coord = start[d] + (Math.floor(i / chunkStrides[d]) % chunkShape[d]);
+            if (coord >= shape[d]) {
+              inBounds = false;
+              break;
+            }
+            flat += coord * strides[d];
+          }
+          if (inBounds) output[flat] = strings[i];
+        }
+      })
+    );
 
     return output;
   }

@@ -1,6 +1,6 @@
 {
   "name": "hdf5-as-virtual-zarr",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Given an input HDF5 file URL, generate a Zarr References Specification JSON output.",
   "type": "module",
   "main": "dist/index.js",
@@ -45,6 +45,7 @@
   "license": "MIT",
   "dependencies": {
     "@zarrita/storage": "^0.2.0",
+    "quick-lru": "^8.0.0",
     "reference-spec-reader": "^0.2.0"
   },
   "devDependencies": {

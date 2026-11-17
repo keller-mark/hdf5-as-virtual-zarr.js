@@ -98,7 +98,7 @@ async function processFile(file) {
   try {
     const source = new FileSource(file);
     const store = await HdfStore.fromStore(source);
-    const consolidated = store.getConsolidatedMetadata();
+    const consolidated = await store.getConsolidatedMetadata();
 
     jsonResult = JSON.stringify(consolidated, null, 2);
     output.textContent = jsonResult;

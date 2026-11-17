@@ -8,7 +8,7 @@
  */
 
 import type { AsyncReadable } from "../types.js";
-import { fetchRange } from "../types.js";
+import { fetchRange, fetchRangeWithReadAhead } from "../types.js";
 import {
   _structure_size,
   _padded_size,
@@ -136,6 +136,9 @@ const FRACTAL_HEAP_HEADER = new Map<string, string>([
   ["indirect_current_rows_count", "H"],
 ]);
 
+const LOCAL_HEAP_READ_AHEAD = 1024;
+const GLOBAL_HEAP_READ_AHEAD = 4096;
+
 // ────────── SuperBlock ──────────
 
 export class SuperBlock {
@@ -188,6 +191,15 @@ export class SuperBlock {
     return new SuperBlock(source, contents, version, end_of_sblock);
   }
 
+  /** Absolute end-of-file address (i.e. the file size), as recorded in the superblock. */
+  get end_of_file(): number {
+    const base =
+      this.version === 0
+        ? this._contents.get("base_address_lower")
+        : this._contents.get("base_address");
+    return base + this._contents.get("end_of_file_address");
+  }
+
   async getOffsetToDataobjects(): Promise<number> {
     if (this.version === 0) {
       const sym_table = await SymbolTable.create(
@@ -218,14 +230,18 @@ export class Heap {
 
   static async create(source: AsyncReadable, offset: number): Promise<Heap> {
     const headerSize = _structure_size(LOCAL_HEAP);
-    const hBuf = await fetchRange(source, offset, headerSize);
+    // The data segment usually directly follows the header; read ahead to cover both.
+    const hBuf = await fetchRangeWithReadAhead(source, offset, headerSize, LOCAL_HEAP_READ_AHEAD);
     const local_heap = _unpack_struct_from(LOCAL_HEAP, hBuf, 0);
     assert(local_heap.get("signature") === "HEAP");
     assert(local_heap.get("version") === 0);
 
     const data_offset = local_heap.get("address_of_data_segment");
     const seg_size = local_heap.get("data_segment_size");
-    const heap_data = await fetchRange(source, data_offset, seg_size);
+    const rel = data_offset - offset;
+    const heap_data = rel >= 0 && rel + seg_size <= hBuf.byteLength
+      ? hBuf.slice(rel, rel + seg_size)
+      : await fetchRange(source, data_offset, seg_size);
     local_heap.set("heap_data", heap_data);
 
     return new Heap(local_heap, heap_data);
@@ -263,10 +279,17 @@ export class SymbolTable {
     let node: Map<string, any>;
     let readOffset = offset;
 
+    let nodeBuf: ArrayBuffer | null = null;
     if (root) {
       node = new Map([["symbols", 1]]);
     } else {
-      const nodeBuf = await fetchRange(source, offset, SYMBOL_TABLE_NODE_SIZE);
+      // Read the node header together with (up to) 2K = 32 entries, HDF5's default.
+      nodeBuf = await fetchRangeWithReadAhead(
+        source,
+        offset,
+        SYMBOL_TABLE_NODE_SIZE,
+        SYMBOL_TABLE_NODE_SIZE + 32 * SYMBOL_TABLE_ENTRY_SIZE
+      );
       node = _unpack_struct_from(SYMBOL_TABLE_NODE, nodeBuf, 0);
       if (node.get("signature") !== "SNOD") throw new Error("incorrect node type");
       readOffset = offset + SYMBOL_TABLE_NODE_SIZE;
@@ -274,7 +297,9 @@ export class SymbolTable {
 
     const n_symbols = node.get("symbols");
     const entryBytes = n_symbols * SYMBOL_TABLE_ENTRY_SIZE;
-    const entryBuf = await fetchRange(source, readOffset, entryBytes);
+    const entryBuf = nodeBuf && SYMBOL_TABLE_NODE_SIZE + entryBytes <= nodeBuf.byteLength
+      ? nodeBuf.slice(SYMBOL_TABLE_NODE_SIZE, SYMBOL_TABLE_NODE_SIZE + entryBytes)
+      : await fetchRange(source, readOffset, entryBytes);
 
     const entries: Map<string, any>[] = [];
     let localOff = 0;
@@ -333,14 +358,19 @@ export class GlobalHeap {
   }
 
   static async create(source: AsyncReadable, offset: number): Promise<GlobalHeap> {
-    const hBuf = await fetchRange(source, offset, GLOBAL_HEAP_HEADER_SIZE);
+    // Collections are at least 4 KiB; read ahead so small ones take a single request.
+    const hBuf = await fetchRangeWithReadAhead(
+      source,
+      offset,
+      GLOBAL_HEAP_HEADER_SIZE,
+      GLOBAL_HEAP_READ_AHEAD
+    );
     const header = _unpack_struct_from(GLOBAL_HEAP_HEADER, hBuf, 0);
 
     const heap_data_size = header.get("collection_size") - GLOBAL_HEAP_HEADER_SIZE;
-    const heap_data = await fetchRange(source,
-      offset + GLOBAL_HEAP_HEADER_SIZE,
-      heap_data_size
-    );
+    const heap_data = GLOBAL_HEAP_HEADER_SIZE + heap_data_size <= hBuf.byteLength
+      ? hBuf.slice(GLOBAL_HEAP_HEADER_SIZE, GLOBAL_HEAP_HEADER_SIZE + heap_data_size)
+      : await fetchRange(source, offset + GLOBAL_HEAP_HEADER_SIZE, heap_data_size);
     return new GlobalHeap(header, heap_data);
   }
 
@@ -487,9 +517,7 @@ export class FractalHeap {
     };
 
     if (nrows > 0) {
-      for await (const data of FractalHeap._iter_indirect_block(ctx, root_address, nrows)) {
-        managedParts.push(data);
-      }
+      managedParts.push(...(await FractalHeap._read_indirect_block(ctx, root_address, nrows)));
     } else if (root_address != null) {
       const data = await FractalHeap._read_direct_block(ctx, root_address, start_block_size);
       managedParts.push(data);
@@ -562,11 +590,15 @@ export class FractalHeap {
     return data;
   }
 
-  private static async *_iter_indirect_block(
+  /**
+   * Read all direct blocks reachable from an indirect block (in heap order).
+   * Blocks are fetched concurrently.
+   */
+  private static async _read_indirect_block(
     ctx: any,
     offset: number,
     nrows: number
-  ): AsyncGenerator<ArrayBuffer> {
+  ): Promise<ArrayBuffer[]> {
     const ibHdrBuf = await fetchRange(ctx.source, offset, ctx.indirect_block_header_size);
     const header = _unpack_struct_from(ctx.indirect_block_header, ibHdrBuf, 0);
     let readOff = offset + ctx.indirect_block_header_size;
@@ -605,12 +637,19 @@ export class FractalHeap {
       indirect_blocks.push([address, nr]);
     }
 
-    for (const [address, block_size] of direct_blocks) {
-      yield await FractalHeap._read_direct_block(ctx, address, block_size);
-    }
-    for (const [address, nr] of indirect_blocks) {
-      yield* FractalHeap._iter_indirect_block(ctx, address, nr);
-    }
+    const [direct, indirect] = await Promise.all([
+      Promise.all(
+        direct_blocks.map(([address, block_size]) =>
+          FractalHeap._read_direct_block(ctx, address, block_size)
+        )
+      ),
+      Promise.all(
+        indirect_blocks.map(([address, nr]) =>
+          FractalHeap._read_indirect_block(ctx, address, nr)
+        )
+      ),
+    ]);
+    return [...direct, ...indirect.flat()];
   }
 
   private static _calc_block_size(ctx: any, iblock: number): number {

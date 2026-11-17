@@ -8,7 +8,7 @@
  */
 
 import type { AsyncReadable } from "../types.js";
-import { fetchRange } from "../types.js";
+import { fetchRange, fetchRangeWithReadAhead } from "../types.js";
 import {
   _unpack_struct_from,
   _structure_size,
@@ -29,19 +29,41 @@ const B_LINK_NODE_V1 = new Map<string, string>([
 ]);
 const B_LINK_NODE_V1_SIZE = _structure_size(B_LINK_NODE_V1);
 
-async function _readV1NodeHeader(
+/**
+ * Number of entries read ahead together with a V1 B-tree node header.
+ * HDF5's default node widths are 2K = 32 (groups) and 2K = 64 (chunks),
+ * so this usually covers the whole node in a single request.
+ */
+const V1_NODE_READ_AHEAD_ENTRIES = 64;
+
+/**
+ * Read a V1 B-tree node: its header plus `entries_used` entries of
+ * `entrySize` bytes and `trailingSize` extra bytes, in one request when possible.
+ * Returns the parsed header and a buffer holding the bytes after the header.
+ */
+async function _readV1Node(
   source: AsyncReadable,
   offset: number,
-  node_level: number | null
+  node_level: number | null,
+  entrySize: number,
+  trailingSize: number
 ): Promise<[Map<string, any>, ArrayBuffer]> {
-  // Read header + generous amount for keys/addresses that follow
-  // We don't know exact size yet, so read header first
-  const hBuf = await fetchRange(source, offset, B_LINK_NODE_V1_SIZE);
-  const node = _unpack_struct_from(B_LINK_NODE_V1, hBuf, 0);
+  const buf = await fetchRangeWithReadAhead(
+    source,
+    offset,
+    B_LINK_NODE_V1_SIZE,
+    B_LINK_NODE_V1_SIZE + V1_NODE_READ_AHEAD_ENTRIES * entrySize + trailingSize
+  );
+  const node = _unpack_struct_from(B_LINK_NODE_V1, buf, 0);
   if (node_level != null && node.get("node_level") !== node_level) {
     throw new Error("node level does not match");
   }
-  return [node, hBuf];
+  const dataSize = node.get("entries_used") * entrySize + trailingSize;
+  const dataEnd = B_LINK_NODE_V1_SIZE + dataSize;
+  const data = dataEnd <= buf.byteLength
+    ? buf.slice(B_LINK_NODE_V1_SIZE, dataEnd)
+    : await fetchRange(source, offset + B_LINK_NODE_V1_SIZE, dataSize);
+  return [node, data];
 }
 
 interface BTreeV1Node {
@@ -68,13 +90,9 @@ export class BTreeV1Groups {
       off: number,
       node_level: number | null
     ): Promise<BTreeV1Node> {
-      const [header] = await _readV1NodeHeader(source, off, node_level);
-      let readOff = off + B_LINK_NODE_V1_SIZE;
-
-      const entries_used = header.get("entries_used");
       // Each entry: key(Q=8) + address(Q=8) = 16 bytes, plus one extra key
-      const dataSize = entries_used * 16 + 8;
-      const dataBuf = await fetchRange(source, readOff, dataSize);
+      const [header, dataBuf] = await _readV1Node(source, off, node_level, 16, 8);
+      const entries_used = header.get("entries_used");
       let localOff = 0;
 
       const keys: number[] = [];
@@ -100,12 +118,11 @@ export class BTreeV1Groups {
     let node_level = depth;
     while (node_level > 0) {
       const parents = all_nodes.get(node_level) || [];
-      for (const parent of parents) {
-        for (const child_addr of parent.addresses) {
-          const child = await readNode(child_addr, node_level - 1);
-          addNode(all_nodes, child, node_level - 1);
-        }
-      }
+      const childAddrs = parents.flatMap((parent) => parent.addresses);
+      const children = await Promise.all(
+        childAddrs.map((child_addr) => readNode(child_addr, node_level - 1))
+      );
+      for (const child of children) addNode(all_nodes, child, node_level - 1);
       node_level--;
     }
 
@@ -156,15 +173,12 @@ export class BTreeV1RawDataChunks {
       off: number,
       node_level: number | null
     ) {
-      const [header] = await _readV1NodeHeader(source, off, node_level);
-      let readOff = off + B_LINK_NODE_V1_SIZE;
-
-      const entries_used = header.get("entries_used");
       // Each entry: chunk_size(I=4) + filter_mask(I=4) + dims*Q + address(Q=8)
       const fmt = "<" + dims.toFixed() + "Q";
       const fmt_size = struct.calcsize(fmt);
       const entrySize = 8 + fmt_size + 8; // II + dims*Q + Q
-      const dataBuf = await fetchRange(source, readOff, entries_used * entrySize);
+      const [header, dataBuf] = await _readV1Node(source, off, node_level, entrySize, 0);
+      const entries_used = header.get("entries_used");
       let localOff = 0;
 
       const keys: ChunkKey[] = [];
@@ -193,12 +207,11 @@ export class BTreeV1RawDataChunks {
     let node_level = depth;
     while (node_level > 0) {
       const parents = all_nodes.get(node_level) || [];
-      for (const parent of parents) {
-        for (const child_addr of parent.addresses) {
-          const child = await readNode(child_addr, node_level - 1);
-          addNode(all_nodes, child, node_level - 1);
-        }
-      }
+      const childAddrs = parents.flatMap((parent) => parent.addresses);
+      const children = await Promise.all(
+        childAddrs.map((child_addr) => readNode(child_addr, node_level - 1))
+      );
+      for (const child of children) addNode(all_nodes, child, node_level - 1);
       node_level--;
     }
 
@@ -380,12 +393,11 @@ async function _readBTreeV2(
   let node_level = depth;
   while (node_level > 0) {
     const parents = all_nodes.get(node_level) || [];
-    for (const parent of parents) {
-      for (const child_addr of parent.addresses) {
-        const child = await readNode(child_addr, node_level - 1);
-        addNode(all_nodes, child, node_level - 1);
-      }
-    }
+    const childAddrs: [number, number, number][] = parents.flatMap((parent) => parent.addresses);
+    const children = await Promise.all(
+      childAddrs.map((child_addr) => readNode(child_addr, node_level - 1))
+    );
+    for (const child of children) addNode(all_nodes, child, node_level - 1);
     node_level--;
   }
 
