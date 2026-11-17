@@ -124,11 +124,12 @@ describe("partial reads", () => {
       expect(spy.fractionRead()).toBeLessThan(0.5);
     });
 
-    it("sparse.h5ad reads less than 75% of the file", async () => {
-      // sparse.h5ad is small (29 KB), so metadata is a larger fraction than in
-      // mouse_liver.h5ad, but the actual CSR data arrays are still not read.
-      const spy = await translateWithSpy("sparse.h5ad");
-      expect(spy.fractionRead()).toBeLessThan(0.75);
+    it("secondary_analysis.subset.h5ad reads less than 10% of the file", async () => {
+      // Metadata reads use small read-ahead windows (to avoid dependent round trips
+      // when the source is wrapped with withRangeCoalescing), so tiny fixtures such
+      // as sparse.h5ad (29 KB) are read almost entirely. Use a larger file instead.
+      const spy = await translateWithSpy("secondary_analysis.subset.h5ad");
+      expect(spy.fractionRead()).toBeLessThan(0.1);
     });
   });
 

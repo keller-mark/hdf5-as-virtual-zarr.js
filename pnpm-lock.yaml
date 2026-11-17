@@ -16,6 +16,9 @@ importers:
       '@zarrita/storage':
         specifier: ^0.2.0
         version: 0.2.0
+      quick-lru:
+        specifier: ^8.0.0
+        version: 8.0.0
       reference-spec-reader:
         specifier: ^0.2.0
         version: 0.2.0
@@ -506,6 +509,10 @@ packages:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
     engines: {node: ^10 || ^12 || >=14}
 
+  quick-lru@8.0.0:
+    resolution: {integrity: sha512-wuV1TowawrTfnwGvYbjYE1vwKAO0yO0rcEgHz0y9/Lz+v79WqQtRLLpLYYCZJY/tacCb9zVDMDJCJ04DKVZgfg==}
+    engines: {node: '>=22'}
+
   reference-spec-reader@0.2.0:
     resolution: {integrity: sha512-q0mfCi5yZSSHXpCyxjgQeaORq3tvDsxDyzaadA/5+AbAUwRyRuuTh0aRQuE/vAOt/qzzxidJ5iDeu1cLHaNBlQ==}
 
@@ -974,6 +981,8 @@ snapshots:
       nanoid: 3.3.11
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  quick-lru@8.0.0: {}
 
   reference-spec-reader@0.2.0: {}
 

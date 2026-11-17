@@ -435,20 +435,28 @@ function getAttrDatatypeClasses(dataobjects: DataObjects): Map<string, number> {
   return result;
 }
 
+type Refs = Record<string, string | [string | null, number, number]>;
+
+function isVlenString(rawDtype: unknown): boolean {
+  return Array.isArray(rawDtype) && rawDtype[0] === "VLEN_STRING";
+}
+
 /**
  * Translate the content of one HDF5 file into Zarr metadata
  * following the Zarr References Specification v1.
  *
  * Ported from kerchunk's SingleHdf5ToZarr Python class.
  * Uses vendored async HDF5 parser with Source-based partial reads.
+ *
+ * Besides the whole-file `translate()`, individual nodes can be translated
+ * on demand via `translateNode()` (used by HdfStore for lazy translation).
  */
 export class SingleHdf5ToZarr {
   private source: AsyncReadable;
-  private h5File!: Hdf5File;
+  private h5File: Promise<Hdf5File> | null = null;
   private url: string | null;
   private inlineThreshold: number;
   private zarrFormat: 2 | 3;
-  private refs: Record<string, string | [string | null, number, number]>;
 
   /**
    * @param source - An AsyncReadable instance for reading the HDF5 file.
@@ -462,73 +470,123 @@ export class SingleHdf5ToZarr {
     this.url = options.url ?? null;
     this.inlineThreshold = options.inlineThreshold ?? 300;
     this.zarrFormat = options.zarrFormat ?? 2;
-    this.refs = {};
+  }
+
+  /**
+   * Open (and cache) the HDF5 file: reads the superblock and the root group's links.
+   */
+  open(): Promise<Hdf5File> {
+    if (!this.h5File) {
+      this.h5File = Hdf5File.create(this.source);
+      this.h5File.catch(() => {
+        this.h5File = null;
+      });
+    }
+    return this.h5File;
   }
 
   /**
    * Translate the HDF5 file content into a Zarr reference spec.
+   * Independent groups and datasets are processed concurrently.
    */
   async translate(): Promise<ReferenceSpec> {
-    this.h5File = await Hdf5File.create(this.source);
-    this.refs = {};
-
-    // Root group
-    this.refs[".zgroup"] = jsonStringifySorted({ zarr_format: 2 } as ZarrGroupMeta);
-    await this.transferAttrs(this.h5File, "");
-
-    // Walk all items recursively
-    await this.walkGroup(this.h5File, "");
-
-    const refSpec: ReferenceSpec = {
-      version: 1,
-      refs: this.refs,
-    };
+    const h5File = await this.open();
+    const refs = await this.translateTree(h5File, true);
+    const refSpec: ReferenceSpec = { version: 1, refs };
     return this.zarrFormat === 3 ? refSpecV2ToV3(refSpec) : refSpec;
   }
 
   /**
-   * Recursively walk an HDF5 group, processing all children.
+   * Translate the metadata (groups, arrays, attributes) of the whole hierarchy,
+   * without any chunk references. Only HDF5 metadata is read; no data chunks or
+   * variable-length string heaps are touched.
    */
-  private async walkGroup(group: Hdf5Group, parentPath: string): Promise<void> {
-    const keys = group.keys;
-    for (const key of keys) {
-      const childPath = parentPath ? `${parentPath}/${key}` : key;
-      let child: Hdf5Group | Hdf5Dataset;
-      try {
-        child = await group.get(key);
-      } catch {
-        continue;
-      }
-      if (!child) continue;
+  async translateMetadata(): Promise<ReferenceSpec> {
+    const h5File = await this.open();
+    const refs = await this.translateTree(h5File, false);
+    const refSpec: ReferenceSpec = { version: 1, refs };
+    return this.zarrFormat === 3 ? refSpecV2ToV3(refSpec) : refSpec;
+  }
 
-      if (child instanceof Hdf5Dataset) {
-        await this.processDataset(childPath, child);
-      } else if (child instanceof Hdf5Group) {
-        await this.processGroup(childPath, child);
-        await this.walkGroup(child, childPath);
-      }
+  /**
+   * Translate a single HDF5 group or dataset into Zarr v2 references
+   * (keys are relative to the hierarchy root, e.g. "obs/.zattrs" or "X/data/0").
+   *
+   * @param path Path of the node within the hierarchy ("" for the root).
+   * @param obj The HDF5 group or dataset at that path.
+   * @param options.chunks Whether to include chunk references (and inline data).
+   */
+  async translateNode(
+    path: string,
+    obj: Hdf5Group | Hdf5Dataset,
+    options: { chunks?: boolean } = {}
+  ): Promise<Refs> {
+    const refs: Refs = {};
+    if (obj instanceof Hdf5Dataset) {
+      await this.processDataset(refs, path, obj, options.chunks ?? true);
+    } else {
+      await this.processGroup(refs, path, obj);
     }
+    return refs;
+  }
+
+  /**
+   * Translate a node and all of its descendants. Children are processed
+   * concurrently, but the returned refs are in depth-first order
+   * (the same order a sequential walk would produce).
+   */
+  private async translateTree(
+    root: Hdf5Group,
+    chunks: boolean
+  ): Promise<Refs> {
+    const parts: Refs[] = [];
+    const visit = async (path: string, obj: Hdf5Group | Hdf5Dataset): Promise<Refs[]> => {
+      const own = this.translateNode(path, obj, { chunks });
+      if (!(obj instanceof Hdf5Group)) return [await own];
+      const children = await Promise.all(
+        obj.keys.map(async (key) => {
+          const childPath = path ? `${path}/${key}` : key;
+          let child: Hdf5Group | Hdf5Dataset;
+          try {
+            child = await obj.get(key);
+          } catch {
+            return [];
+          }
+          if (!child) return [];
+          return visit(childPath, child);
+        })
+      );
+      return [await own, ...children.flat()];
+    };
+    parts.push(...(await visit("", root)));
+    return Object.assign({}, ...parts);
   }
 
   /**
    * Process an HDF5 group into Zarr group metadata.
    */
-  private async processGroup(path: string, group: Hdf5Group): Promise<void> {
-    this.refs[`${path}/.zgroup`] = jsonStringifySorted({
+  private async processGroup(refs: Refs, path: string, group: Hdf5Group): Promise<void> {
+    const prefix = path ? `${path}/` : "";
+    refs[`${prefix}.zgroup`] = jsonStringifySorted({
       zarr_format: 2,
     } as ZarrGroupMeta);
-    await this.transferAttrs(group, path);
+    await this.transferAttrs(refs, group, path);
   }
 
   /**
-   * Process an HDF5 dataset into Zarr array metadata and chunk references.
+   * Process an HDF5 dataset into Zarr array metadata and (optionally) chunk references.
    */
-  private async processDataset(path: string, dataset: Hdf5Dataset): Promise<void> {
+  private async processDataset(
+    refs: Refs,
+    path: string,
+    dataset: Hdf5Dataset,
+    includeChunks: boolean
+  ): Promise<void> {
     const dataobjects = dataset._dataobjects;
     const shape = dataobjects.shape;
     if (!shape || shape.length === 0) {
       // Scalar dataset
-      await this.processScalarDataset(path, dataset, dataobjects);
+      await this.processScalarDataset(refs, path, dataset, dataobjects, includeChunks);
       return;
     }
 
@@ -573,34 +631,51 @@ export class SingleHdf5ToZarr {
       filters: zarrFilters,
     };
 
-    this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
+    if (isVlenString(rawDtype)) {
+      // Variable-length strings are inlined as a single json2-encoded chunk
+      // (the metadata does not depend on reading the data itself).
+      zarrMeta.dtype = "|O";
+      zarrMeta.fill_value = null;
+      zarrMeta.filters = [JSON2_FILTER];
+      zarrMeta.compressor = null;
+    }
+
+    refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
 
     // Transfer attributes
-    await this.transferAttrs(dataset, path);
+    await this.transferAttrs(refs, dataset, path);
 
     // Add _ARRAY_DIMENSIONS
     const dims = this.getArrayDims(dataset, path, shape);
     const existingAttrsKey = `${path}/.zattrs`;
-    const existingAttrs = this.refs[existingAttrsKey]
-      ? JSON.parse(this.refs[existingAttrsKey] as string)
+    const existingAttrs = refs[existingAttrsKey]
+      ? JSON.parse(refs[existingAttrsKey] as string)
       : {};
     existingAttrs["_ARRAY_DIMENSIONS"] = dims;
-    this.refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
+    refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
+
+    if (!includeChunks) return;
 
     // Process data: vlen strings get inlined, others get file references
     if (isVlen) {
-      await this.inlineVlenData(path, dataset, shape, chunks);
+      await this.inlineVlenData(refs, path, dataset, shape, chunks);
     } else if (isFixedString) {
-      await this.inlineFixedStringData(path, dataset, shape, chunks, rawDtype);
+      await this.inlineFixedStringData(refs, path, dataset, shape, chunks, rawDtype);
     } else {
-      await this.processChunkReferences(path, dataobjects, shape, chunks, dtype);
+      await this.processChunkReferences(refs, path, dataobjects, shape, chunks, dtype);
     }
   }
 
   /**
    * Process a scalar dataset (shape=[]).
    */
-  private async processScalarDataset(path: string, dataset: Hdf5Dataset, dataobjects: DataObjects): Promise<void> {
+  private async processScalarDataset(
+    refs: Refs,
+    path: string,
+    dataset: Hdf5Dataset,
+    dataobjects: DataObjects,
+    includeChunks: boolean
+  ): Promise<void> {
     const rawDtype = dataobjects.dtype;
     const isVlen = Array.isArray(rawDtype) &&
       (rawDtype[0] === "VLEN_STRING" || rawDtype[0] === "VLEN_SEQUENCE");
@@ -630,23 +705,25 @@ export class SingleHdf5ToZarr {
       zarrMeta.filters = [JSON2_FILTER];
     }
 
-    this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
-    await this.transferAttrs(dataset, path);
+    refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
+    await this.transferAttrs(refs, dataset, path);
 
     // Add _ARRAY_DIMENSIONS
     const existingAttrsKey = `${path}/.zattrs`;
-    const existingAttrs = this.refs[existingAttrsKey]
-      ? JSON.parse(this.refs[existingAttrsKey] as string)
+    const existingAttrs = refs[existingAttrsKey]
+      ? JSON.parse(refs[existingAttrsKey] as string)
       : {};
     existingAttrs["_ARRAY_DIMENSIONS"] = [];
-    this.refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
+    refs[existingAttrsKey] = jsonStringifySorted(existingAttrs);
+
+    if (!includeChunks) return;
 
     // Inline data
     if (isVlen) {
       try {
         const data = await dataobjects.get_data();
         const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
-        this.refs[`${path}/0`] = encodeJson2(strings, []);
+        refs[`${path}/0`] = encodeJson2(strings, []);
       } catch {
         // Cannot read scalar vlen data
       }
@@ -656,7 +733,7 @@ export class SingleHdf5ToZarr {
         const value = Array.isArray(data) ? data[0] : data;
         const bytes = encodeScalar(value, dtype);
         if (bytes) {
-          this.refs[`${path}/0`] = inlineBytes(bytes);
+          refs[`${path}/0`] = inlineBytes(bytes);
         }
       } catch {
         // Cannot read scalar data
@@ -668,6 +745,7 @@ export class SingleHdf5ToZarr {
    * Inline vlen string data using json2 codec encoding.
    */
   private async inlineVlenData(
+    refs: Refs,
     path: string,
     dataset: Hdf5Dataset,
     shape: number[],
@@ -680,15 +758,15 @@ export class SingleHdf5ToZarr {
       const strings: string[] = Array.isArray(data) ? data.map(String) : [String(data)];
 
       const key = `${path}/${chunks.map(() => "0").join(".")}`;
-      this.refs[key] = encodeJson2(strings, shape);
+      refs[key] = encodeJson2(strings, shape);
 
-      // Update .zarray for vlen string codec
-      const zarrMeta = JSON.parse(this.refs[`${path}/.zarray`] as string);
+      // Update .zarray for vlen codec (already done for vlen strings)
+      const zarrMeta = JSON.parse(refs[`${path}/.zarray`] as string);
       zarrMeta.dtype = "|O";
       zarrMeta.fill_value = null;
       zarrMeta.filters = [JSON2_FILTER];
       zarrMeta.compressor = null;
-      this.refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
+      refs[`${path}/.zarray`] = serializeZarrayMeta(zarrMeta);
     } catch {
       // Cannot read vlen data
     }
@@ -698,6 +776,7 @@ export class SingleHdf5ToZarr {
    * Inline fixed-length string data.
    */
   private async inlineFixedStringData(
+    refs: Refs,
     path: string,
     dataset: Hdf5Dataset,
     shape: number[],
@@ -721,7 +800,7 @@ export class SingleHdf5ToZarr {
         const encoded = encoder.encode(strings[i]);
         buf.set(encoded.subarray(0, strSize), i * strSize);
       }
-      this.refs[key] = inlineBytes(buf);
+      refs[key] = inlineBytes(buf);
     } catch {
       // Cannot read fixed string data
     }
@@ -732,6 +811,7 @@ export class SingleHdf5ToZarr {
    * Uses file byte offset references for chunked and contiguous data.
    */
   private async processChunkReferences(
+    refs: Refs,
     path: string,
     dataobjects: DataObjects,
     shape: number[],
@@ -748,9 +828,9 @@ export class SingleHdf5ToZarr {
 
       if (size <= this.inlineThreshold) {
         const ab = await fetchRange(this.source, offset, size);
-        this.refs[key] = inlineBytes(new Uint8Array(ab));
+        refs[key] = inlineBytes(new Uint8Array(ab));
       } else {
-        this.refs[key] = [this.url, offset, size];
+        refs[key] = [this.url, offset, size];
       }
     } else if (storageInfo.layoutClass === 2 && storageInfo.chunkAddress !== undefined) {
       // Chunked storage - get chunk locations from B-tree
@@ -784,20 +864,22 @@ export class SingleHdf5ToZarr {
         storageInfo.chunkShape!
       );
 
-      for (const loc of chunkLocations) {
-        const key = `${path}/${loc.chunkIndex.join(".")}`;
-        let size = hasFilters ? loc.size : uncompressedChunkBytes;
-        if (hasF32) {
-          size -= 4; // Strip fletcher32 checksum
-        }
+      const entries = await Promise.all(
+        chunkLocations.map(async (loc): Promise<[string, Refs[string]]> => {
+          const key = `${path}/${loc.chunkIndex.join(".")}`;
+          let size = hasFilters ? loc.size : uncompressedChunkBytes;
+          if (hasF32) {
+            size -= 4; // Strip fletcher32 checksum
+          }
 
-        if (size <= this.inlineThreshold) {
-          const ab = await fetchRange(this.source, loc.offset, size);
-          this.refs[key] = inlineBytes(new Uint8Array(ab));
-        } else {
-          this.refs[key] = [this.url, loc.offset, size];
-        }
-      }
+          if (size <= this.inlineThreshold) {
+            const ab = await fetchRange(this.source, loc.offset, size);
+            return [key, inlineBytes(new Uint8Array(ab))];
+          }
+          return [key, [this.url, loc.offset, size]];
+        })
+      );
+      for (const [key, value] of entries) refs[key] = value;
     } else if (storageInfo.layoutClass === 1) {
       // Contiguous but no data written - empty dataset, no refs needed
     }
@@ -821,7 +903,7 @@ export class SingleHdf5ToZarr {
   /**
    * Transfer attributes from an HDF5 object to the Zarr .zattrs.
    */
-  private async transferAttrs(h5obj: any, path: string): Promise<void> {
+  private async transferAttrs(refs: Refs, h5obj: any, path: string): Promise<void> {
     const attrs: Record<string, unknown> = {};
     let rawAttrs: Record<string, unknown>;
     try {
@@ -875,7 +957,7 @@ export class SingleHdf5ToZarr {
 
     if (Object.keys(attrs).length > 0) {
       const key = path ? `${path}/.zattrs` : ".zattrs";
-      this.refs[key] = jsonStringifySorted(attrs);
+      refs[key] = jsonStringifySorted(attrs);
     }
   }
 }

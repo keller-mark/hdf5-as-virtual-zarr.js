@@ -140,7 +140,7 @@ describe("HdfStore", () => {
     it("should return the root group with inline metadata for every node", async () => {
       const source = loadH5adSource("dense.h5ad");
       const store = await HdfStore.fromStore(source);
-      const consolidated = store.getConsolidatedMetadata();
+      const consolidated = await store.getConsolidatedMetadata();
       const root = JSON.parse(new TextDecoder().decode(await store.get("/zarr.json")));
       expect(consolidated.zarr_format).toBe(3);
       expect(consolidated.node_type).toBe("group");
@@ -158,7 +158,7 @@ describe("HdfStore", () => {
     it("should be readable by zarrita withConsolidatedMetadata", async () => {
       const source = loadH5adSource("dense.h5ad");
       const store = await HdfStore.fromStore(source);
-      const consolidated = store.getConsolidatedMetadata();
+      const consolidated = await store.getConsolidatedMetadata();
       const bytes = new TextEncoder().encode(JSON.stringify(consolidated));
       const rootOnly = {
         get: async (key: string) => (key === "/zarr.json" ? bytes : store.get(key as `/${string}`)),

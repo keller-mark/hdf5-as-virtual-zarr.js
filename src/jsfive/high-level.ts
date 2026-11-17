@@ -9,6 +9,7 @@
 import type { AsyncReadable } from "../types.js";
 import { DataObjects } from "./dataobjects.js";
 import { SuperBlock } from "./misc-low-level.js";
+import { setFileSize } from "../types.js";
 
 // ────────── Group ──────────
 
@@ -122,6 +123,8 @@ export class File extends Group {
 
   static async create(source: AsyncReadable, filename?: string): Promise<File> {
     const superblock = await SuperBlock.create(source, 0);
+    // Lets read-ahead requests be clamped to the end of the file.
+    setFileSize(source, superblock.end_of_file);
     const offset = await superblock.getOffsetToDataobjects();
     const dataobjects = await DataObjects.create(source, offset);
     const links = await dataobjects.get_links();

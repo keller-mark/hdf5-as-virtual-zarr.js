@@ -13,17 +13,23 @@ This is a port of [SingleHdf5ToZarr](https://github.com/fsspec/kerchunk/blob/mai
 ## Usage
 
 ```ts
-import { open, get, root } from "zarrita";
+import { open, get, root, withRangeCoalescing } from "zarrita";
 import { FetchStore } from "@zarrita/storage";
 import { HdfStore } from "hdf5-as-virtual-zarr";
 
-const internalStore = new FetchStore("https://example.com/data.h5");
+const internalStore = withRangeCoalescing(new FetchStore("https://example.com/data.h5"));
 const hdfStore = await HdfStore.fromStore(internalStore);
 
 const storeRoot = root(hdfStore);
 const arr = await open(storeRoot.resolve("X"), { kind: "array" });
 const arrData = await get(arr);
 ```
+
+### Assumption: the source is wrapped with `withRangeCoalescing`
+
+`HdfStore` assumes the store passed to `HdfStore.fromStore` is wrapped with zarrita's
+[`withRangeCoalescing`](https://github.com/manzt/zarrita.js), as in the example above.
+
 
 ## Development
 
