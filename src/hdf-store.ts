@@ -7,6 +7,13 @@ import {
 import { refSpecV2ToV3 } from "./ref-spec-v2-to-v3.js";
 import { to_binary } from "./ref-store.js";
 import { File as Hdf5File, Group as Hdf5Group, Dataset as Hdf5Dataset } from "./jsfive/high-level.js";
+import {
+  StringArrayReader,
+  GlobalHeapCache,
+  DEFAULT_GLOBAL_HEAP_CACHE_BYTES,
+  type FileAddressing,
+} from "./string-chunks.js";
+import { jsonStringifySorted } from "./encoding.js";
 import type { AbsolutePath, GetOptions } from "@zarrita/storage";
 import QuickLRU from "quick-lru";
 
@@ -18,6 +25,11 @@ export interface HdfStoreOptions {
   maxCachedNodes?: number;
   /** Maximum number of translated nodes (metadata or chunk references) kept in memory (default 500). */
   maxCachedRefs?: number;
+  /**
+   * Maximum total size in bytes of the parsed HDF5 global heap collections
+   * (variable-length string payloads) kept in memory (default 32 MiB).
+   */
+  maxGlobalHeapCacheBytes?: number;
 }
 
 /**
@@ -35,8 +47,14 @@ function evictOnReject<V>(cache: QuickLRU<string, Promise<V>>, key: string, prom
  *
  * Translation is lazy: opening the store only reads the superblock and the root
  * group. Each group / array is translated the first time one of its keys is
- * requested, and chunk references (B-tree walks, inlined string data) are only
- * computed when a chunk of that array is requested.
+ * requested, and chunk references (B-tree walks) are only computed when a
+ * chunk of that array is requested.
+ *
+ * String datasets (variable-length and fixed-length) are exposed as Zarr v3
+ * arrays with `data_type: "string"` and the `vlen-utf8` codec. Their chunks are
+ * built on demand: `get("<path>/c/<i>")` reads only HDF5 chunk `i` (or, for
+ * contiguous / compact layouts, a virtual chunk of up to 65,536 elements) and
+ * the global heap collections it references. Encoded chunks are not cached.
  *
  * The source is assumed to be wrapped with zarrita's `withRangeCoalescing`:
  * independent reads (sibling nodes, B-tree children, heap collections, chunks)
@@ -50,6 +68,10 @@ export class HdfStore implements AsyncReadable {
   #root: Promise<Hdf5Node>;
   #nodes: QuickLRU<string, Promise<Hdf5Node | null>>;
   #nodeRefs: QuickLRU<string, Promise<Refs>>;
+  /** Readers for string datasets (metadata and chunk index only, no string data). */
+  #stringReaders: QuickLRU<string, Promise<StringArrayReader | null>>;
+  #heaps: GlobalHeapCache;
+  #addressing: FileAddressing;
   #consolidated: Promise<ZarrV3ConsolidatedMetadata> | null = null;
 
   private constructor(
@@ -63,6 +85,13 @@ export class HdfStore implements AsyncReadable {
     this.#root = Promise.resolve(file);
     this.#nodes = new QuickLRU({ maxSize: options.maxCachedNodes ?? 1000 });
     this.#nodeRefs = new QuickLRU({ maxSize: options.maxCachedRefs ?? 500 });
+    this.#stringReaders = new QuickLRU({ maxSize: options.maxCachedRefs ?? 500 });
+    this.#addressing = { offsetSize: file.offset_size, lengthSize: file.length_size };
+    this.#heaps = new GlobalHeapCache(
+      source,
+      file.length_size,
+      options.maxGlobalHeapCacheBytes ?? DEFAULT_GLOBAL_HEAP_CACHE_BYTES
+    );
   }
 
   /**
@@ -108,6 +137,11 @@ export class HdfStore implements AsyncReadable {
       !((await this.#resolveNode(nodePath)) instanceof Hdf5Dataset)
     ) {
       return undefined;
+    }
+    const reader = await this.#getStringReader(nodePath);
+    if (reader) {
+      const coords = chunkKey === "c" ? [] : chunkKey.slice(2).split("/").map(Number);
+      return reader.getChunk(coords);
     }
     const refs = await this.#getNodeRefs(nodePath, true);
     return this.#resolveRef(refs?.[path], opts);
@@ -183,13 +217,51 @@ export class HdfStore implements AsyncReadable {
       refs = (async () => {
         const node = await this.#resolveNode(path);
         if (!node) return {};
-        const v2Refs = await this.#converter.translateNode(path, node, { chunks });
-        return refSpecV2ToV3({ version: 1, refs: v2Refs }).refs;
+        const reader = await this.#getStringReader(path);
+        // String chunks are computed on demand (see #getStringReader), never stored as refs.
+        const v2Refs = await this.#converter.translateNode(path, node, { chunks: chunks && !reader });
+        const v3Refs = refSpecV2ToV3({ version: 1, refs: v2Refs }).refs;
+        const metaKey = path ? `${path}/zarr.json` : "zarr.json";
+        if (reader && typeof v3Refs[metaKey] === "string") {
+          const meta = JSON.parse(v3Refs[metaKey] as string);
+          meta.chunk_grid = { name: "regular", configuration: { chunk_shape: reader.chunkShape } };
+          v3Refs[metaKey] = jsonStringifySorted(meta);
+        }
+        return v3Refs;
       })();
       evictOnReject(this.#nodeRefs, cacheKey, refs);
       this.#nodeRefs.set(cacheKey, refs);
     }
     return refs;
+  }
+
+  /**
+   * The on-demand chunk reader for a string dataset (cached), or null if the
+   * node at `path` is not a string dataset.
+   */
+  #getStringReader(path: string): Promise<StringArrayReader | null> {
+    let reader = this.#stringReaders.get(path);
+    if (!reader) {
+      reader = this.#resolveNode(path).then((node) => {
+        if (!(node instanceof Hdf5Dataset)) return null;
+        try {
+          return StringArrayReader.fromDataObjects(
+            path,
+            node._dataobjects,
+            this.#source,
+            this.#addressing,
+            this.#heaps
+          );
+        } catch {
+          // Unsupported layout (e.g. a v4 chunk index): fall back to inlining
+          // the whole dataset as a single chunk.
+          return null;
+        }
+      });
+      evictOnReject(this.#stringReaders, path, reader);
+      this.#stringReaders.set(path, reader);
+    }
+    return reader;
   }
 
   async #resolveRef(ref: ReferenceEntry | undefined, opts?: GetOptions): Promise<Uint8Array | undefined> {

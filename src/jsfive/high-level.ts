@@ -107,6 +107,10 @@ export class File extends Group {
   filename: string;
   mode = "r";
   userblock_size = 0;
+  /** Size in bytes of file addresses ("size of offsets" in the superblock). */
+  offset_size = 8;
+  /** Size in bytes of lengths ("size of lengths" in the superblock). */
+  length_size = 8;
 
   private constructor(
     source: AsyncReadable,
@@ -128,7 +132,10 @@ export class File extends Group {
     const offset = await superblock.getOffsetToDataobjects();
     const dataobjects = await DataObjects.create(source, offset);
     const links = await dataobjects.get_links();
-    return new File(source, dataobjects, links, filename || "");
+    const file = new File(source, dataobjects, links, filename || "");
+    file.offset_size = superblock._contents.get("offset_size");
+    file.length_size = superblock._contents.get("length_size");
+    return file;
   }
 }
 

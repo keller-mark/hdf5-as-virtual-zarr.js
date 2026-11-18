@@ -103,7 +103,8 @@ describe("lazy translation", () => {
   it("returns undefined for missing nodes and chunks", async () => {
     const store = await HdfStore.fromStore(new SpySource("compressed_strings.h5"));
     expect(await store.get("/missing/zarr.json")).toBeUndefined();
-    expect(await store.get("/gzip_1d/c/5")).toBeUndefined();
+    expect(await store.get("/gzip_1d/c/11")).toBeUndefined(); // 103 items in chunks of 10: c/0..c/10
+    expect(await store.get("/gzip_1d/c/0/0")).toBeUndefined();
     expect(await store.get("/gzip_1d/.zarray")).toBeUndefined();
   });
 });
