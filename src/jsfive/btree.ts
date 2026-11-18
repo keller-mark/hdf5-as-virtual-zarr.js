@@ -470,6 +470,50 @@ export class BTreeV2GroupOrders {
   }
 }
 
+// ────────── BTreeV2AttributeNames (type 8) ──────────
+
+/**
+ * Name index of densely stored attributes. Each record: heap ID (8 bytes),
+ * message flags (1), creation order (4), name hash (4).
+ * (Creation order index records, type 9, share the same heap ID prefix.)
+ */
+export class BTreeV2AttributeNames {
+  all_nodes: Map<number, any[]>;
+  header: Map<string, any>;
+
+  private constructor(all_nodes: Map<number, any[]>, header: Map<string, any>) {
+    this.all_nodes = all_nodes;
+    this.header = header;
+  }
+
+  static async create(source: AsyncReadable, offset: number): Promise<BTreeV2AttributeNames> {
+    const { all_nodes, header } = await _readBTreeV2(source, offset, (buf, off) => {
+      const [flags, creationorder, namehash] = struct.unpack_from("<BII", buf, off + 8);
+      return new Map<string, any>([
+        ["heapid", buf.slice(off, off + 8)],
+        ["flags", flags],
+        ["creationorder", creationorder],
+        ["namehash", namehash],
+      ]);
+    });
+    const type = header.get("node_type");
+    if (type !== 8 && type !== 9) {
+      throw new Error(`Expected an attribute index B-tree (type 8 or 9), got type ${type}`);
+    }
+    return new BTreeV2AttributeNames(all_nodes, header);
+  }
+
+  *iter_records(): Generator<Map<string, any>> {
+    for (const nodelist of this.all_nodes.values()) {
+      for (const node of nodelist) {
+        for (const key of node.keys) {
+          yield key;
+        }
+      }
+    }
+  }
+}
+
 // ────────── shared helper ──────────
 
 function addNode(

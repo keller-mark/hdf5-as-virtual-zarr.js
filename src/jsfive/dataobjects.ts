@@ -6,8 +6,12 @@
  * - Uses async factory method DataObjects.create(source, offset)
  * - Partial reads via AsyncReadable.fetch() instead of full file buffer
  * - get_links(), get_attributes(), get_data() are async
- * - buf/bufStart design: buf covers all message block ranges,
- *   bufStart = absolute offset where buf starts (= object header offset)
+ * - buf/bufStart design: buf holds the object header prefix followed by its
+ *   message blocks (the first block and any continuation blocks), packed back
+ *   to back. bufStart is 0 and each message's "offset_to_message" is its
+ *   position within buf, so `offset_to_message - bufStart` indexes buf.
+ *   (Blocks are not laid out at their file offsets: continuation blocks are
+ *   often far from the header, e.g. after a dataset's data.)
  */
 
 import type { AsyncReadable } from "../types.js";
@@ -27,6 +31,7 @@ import {
   BTreeV1RawDataChunks,
   BTreeV2GroupNames,
   BTreeV2GroupOrders,
+  BTreeV2AttributeNames,
 } from "./btree.js";
 import { decodeChunk } from "./filters.js";
 import QuickLRU from "quick-lru";
@@ -198,6 +203,27 @@ async function sliceOrFetch(
   return fetchRange(source, absOffset, size);
 }
 
+/**
+ * Pack an object header's prefix and message blocks back to back into one buffer.
+ * Returns the buffer and the start of each block within it.
+ */
+function packBlocks(
+  prefix: Uint8Array,
+  blocks: { size: number; data: ArrayBuffer }[]
+): { buf: ArrayBuffer; starts: number[] } {
+  const total = blocks.reduce((sum, b) => sum + b.size, prefix.byteLength);
+  const packed = new Uint8Array(total);
+  packed.set(prefix, 0);
+  const starts: number[] = [];
+  let pos = prefix.byteLength;
+  for (const b of blocks) {
+    starts.push(pos);
+    packed.set(new Uint8Array(b.data, 0, Math.min(b.size, b.data.byteLength)), pos);
+    pos += b.size;
+  }
+  return { buf: packed.buffer, starts };
+}
+
 // ────────── DataObjects ──────────
 
 export class DataObjects {
@@ -329,66 +355,47 @@ export class DataObjects {
             blockQueue.push({ absOffset: fh_off, size: cont_size });
           }
 
-          if (msg_type === 0 && msg_size === 0) break; // NIL message, stop
+          // NIL messages (type 0) may have size 0 and be followed by more
+          // messages (HDF5 writes one after each continuation message), so the
+          // whole block is always scanned.
           local_offset += HEADER_MSG_INFO_V1_SIZE + msg_size;
         }
       }
     }
 
-    // Build combined sparse buffer
-    // bufStart = minimum of object header offset and all block offsets
-    // (continuation blocks can appear before the object header in the file)
-    let bufStart = offset;
-    let maxEnd = first_block_offset + first_block_size;
-    for (const b of allBlocks) {
-      bufStart = Math.min(bufStart, b.absOffset);
-      maxEnd = Math.max(maxEnd, b.absOffset + b.size);
-    }
-    const combined = new Uint8Array(maxEnd - bufStart);
-    combined.set(new Uint8Array(headerBuf, 0, OBJECT_HEADER_V1_SIZE), offset - bufStart);
-    for (const b of allBlocks) {
-      combined.set(new Uint8Array(b.data), b.absOffset - bufStart);
-    }
-    const buf = combined.buffer;
-
-    // Parse messages (second pass over combined buffer)
-    const msgs: Map<string, any>[] = new Array(total_header_messages);
-    let object_header_blocks: [number, number][] = [[first_block_offset, first_block_size]];
-    // Add continuation blocks discovered during first pass
-    for (let bi = 1; bi < allBlocks.length; bi++) {
-      object_header_blocks.push([allBlocks[bi].absOffset, allBlocks[bi].size]);
-    }
-
-    let current_block = 0;
-    let block_offset = object_header_blocks[0][0];
-    let block_size = object_header_blocks[0][1];
-    let local_offset = 0;
-
-    for (let i = 0; i < total_header_messages; i++) {
-      if (local_offset >= block_size) {
-        current_block++;
-        if (current_block >= object_header_blocks.length) break;
-        [block_offset, block_size] = object_header_blocks[current_block];
-        local_offset = 0;
-      }
-
-      const absPos = block_offset - bufStart + local_offset;
-      const msg = _unpack_struct_from(HEADER_MSG_INFO_V1, buf, absPos);
-      const offset_to_message = block_offset + local_offset + HEADER_MSG_INFO_V1_SIZE;
-      msg.set("offset_to_message", offset_to_message);
-
-      // Continuation blocks add more blocks (already handled above)
-      const msg_size: number = msg.get("size");
-      local_offset += HEADER_MSG_INFO_V1_SIZE + msg_size;
-      msgs[i] = msg;
-    }
-
-    const msg_data = buf.slice(
-      first_block_offset - bufStart,
-      first_block_offset - bufStart + first_block_size
+    // Pack the header and its blocks (allBlocks[0] is the first block).
+    const bufStart = 0;
+    const { buf, starts } = packBlocks(
+      new Uint8Array(headerBuf, 0, OBJECT_HEADER_V1_SIZE),
+      allBlocks
     );
 
-    return { buf, bufStart, msgs: msgs.filter(Boolean), msg_data, header };
+    // Parse messages (second pass over the packed buffer): every message of
+    // every block, blocks in discovery order (the order HDF5 itself reads them).
+    const msgs: Map<string, any>[] = [];
+    for (let bi = 0; bi < allBlocks.length; bi++) {
+      const start = starts[bi];
+      const size = allBlocks[bi].size;
+      let local_offset = 0;
+      while (local_offset + HEADER_MSG_INFO_V1_SIZE <= size) {
+        const absPos = start + local_offset;
+        const msg = _unpack_struct_from(HEADER_MSG_INFO_V1, buf, absPos);
+        msg.set("offset_to_message", absPos + HEADER_MSG_INFO_V1_SIZE);
+        msgs.push(msg);
+        local_offset += HEADER_MSG_INFO_V1_SIZE + (msg.get("size") as number);
+      }
+    }
+    // The count includes NIL and continuation messages; finding fewer means
+    // header blocks were missed (and attributes would silently be lost).
+    if (msgs.length < total_header_messages) {
+      throw new Error(
+        `Object header at ${offset}: expected ${total_header_messages} messages, found ${msgs.length}`
+      );
+    }
+
+    const msg_data = buf.slice(starts[0], starts[0] + first_block_size);
+
+    return { buf, bufStart, msgs, msg_data, header };
   }
 
   // ────────── V2 parsing ──────────
@@ -411,7 +418,9 @@ export class DataObjects {
     const { header, creation_order_size, block_offset: first_block_offset } =
       DataObjects._parseV2Header(peekBuf, 0, offset);
 
+    // Messages and any gap of chunk 0 (its 4-byte checksum follows).
     const first_block_size: number = header.get("size_of_chunk_0");
+    const msgHeaderSize = HEADER_MSG_INFO_V2_SIZE + creation_order_size;
 
     // Collect all blocks
     interface Block { absOffset: number; size: number; data: ArrayBuffer }
@@ -434,7 +443,7 @@ export class DataObjects {
 
       // Scan messages to find continuation blocks
       let local_offset = 0;
-      while (local_offset + HEADER_MSG_INFO_V2_SIZE <= size) {
+      while (local_offset + msgHeaderSize <= size) {
         const relOff = local_offset;
         const msg_type = struct.unpack_from("<B", data, relOff)[0];
         const msg_size = struct.unpack_from("<H", data, relOff + 1)[0];
@@ -442,76 +451,41 @@ export class DataObjects {
 
         if (msg_type === OBJECT_CONTINUATION_MSG_TYPE) {
           const [fh_off, cont_size] = struct.unpack_from("<QQ", data, offset_in_data);
-          // Skip "OFHC" 4-byte signature in v2 continuation blocks
-          blockQueue.push({ absOffset: fh_off + 4, size: cont_size - 4 });
+          // A v2 continuation block is the "OCHK" signature, messages (and
+          // possibly a gap smaller than a message header), then a 4-byte checksum.
+          blockQueue.push({ absOffset: fh_off + 4, size: cont_size - 8 });
         }
 
-        if (msg_type === 0 && msg_size === 0) break;
-        local_offset += HEADER_MSG_INFO_V2_SIZE + msg_size + creation_order_size;
-        if (local_offset >= size - HEADER_MSG_INFO_V2_SIZE) break;
+        // NIL messages may have size 0 and be followed by more messages,
+        // so the whole block is always scanned.
+        local_offset += msgHeaderSize + msg_size;
       }
       }
     }
 
-    // Build combined sparse buffer
-    const bufStart = offset;
-    let maxEnd = first_block_offset + first_block_size;
-    for (const b of allBlocks) {
-      maxEnd = Math.max(maxEnd, b.absOffset + b.size);
-    }
-    const combined = new Uint8Array(maxEnd - bufStart);
-    // Copy the peek buffer (header)
-    const copySize = Math.min(peekSize, combined.length);
-    combined.set(new Uint8Array(peekBuf).subarray(0, copySize), 0);
-    // Copy all blocks
-    for (const b of allBlocks) {
-      combined.set(new Uint8Array(b.data), b.absOffset - bufStart);
-    }
-    const buf = combined.buffer;
+    // Pack the header prefix (up to the first block) and the blocks
+    // (allBlocks[0] is the first block).
+    const bufStart = 0;
+    const prefixSize = Math.min(peekSize, first_block_offset - offset);
+    const { buf, starts } = packBlocks(new Uint8Array(peekBuf, 0, prefixSize), allBlocks);
 
-    // Parse messages (second pass)
+    // Parse messages (second pass): every message of every block, blocks in
+    // discovery order. A trailing gap smaller than a message header is skipped.
     const msgs: Map<string, any>[] = [];
-    const object_header_blocks: [number, number][] = [];
-    for (const b of allBlocks) {
-      object_header_blocks.push([b.absOffset, b.size]);
-    }
-
-    let current_block = 0;
-    let block_offset = object_header_blocks[0][0];
-    let block_size = object_header_blocks[0][1];
-    let local_offset = 0;
-
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      if (local_offset >= block_size - HEADER_MSG_INFO_V2_SIZE) {
-        current_block++;
-        if (current_block >= object_header_blocks.length) break;
-        [block_offset, block_size] = object_header_blocks[current_block];
-        local_offset = 0;
-      }
-
-      const absPos = block_offset - bufStart + local_offset;
-      const msg = _unpack_struct_from(HEADER_MSG_INFO_V2, buf, absPos);
-      const offset_to_message =
-        block_offset + local_offset + HEADER_MSG_INFO_V2_SIZE + creation_order_size;
-      msg.set("offset_to_message", offset_to_message);
-
-      const msg_size: number = msg.get("size");
-      local_offset += HEADER_MSG_INFO_V2_SIZE + msg_size + creation_order_size;
-      msgs.push(msg);
-
-      if (local_offset >= block_size - HEADER_MSG_INFO_V2_SIZE) {
-        current_block++;
-        if (current_block >= object_header_blocks.length) break;
-        [block_offset, block_size] = object_header_blocks[current_block];
-        local_offset = 0;
+    for (let bi = 0; bi < allBlocks.length; bi++) {
+      const start = starts[bi];
+      const size = allBlocks[bi].size;
+      let local_offset = 0;
+      while (local_offset + msgHeaderSize <= size) {
+        const absPos = start + local_offset;
+        const msg = _unpack_struct_from(HEADER_MSG_INFO_V2, buf, absPos);
+        msg.set("offset_to_message", absPos + msgHeaderSize);
+        msgs.push(msg);
+        local_offset += msgHeaderSize + (msg.get("size") as number);
       }
     }
 
-    const msg_data = buf.slice(
-      first_block_offset - bufStart,
-      first_block_offset - bufStart + first_block_size
-    );
+    const msg_data = buf.slice(starts[0], starts[0] + first_block_size);
 
     return { buf, bufStart, msgs, msg_data, header };
   }
@@ -1036,12 +1010,10 @@ export class DataObjects {
       return {};
     }
 
-    const ordered = order_btree_address !== null && order_btree_address !== UNDEFINED_ADDRESS;
+    // The name index (B-tree type 8) always exists; its records hold the heap IDs.
     const [heap, btree] = await Promise.all([
       FractalHeap.create(this._source, fractal_heap_address),
-      ordered
-        ? BTreeV2GroupOrders.create(this._source, order_btree_address!)
-        : BTreeV2GroupNames.create(this._source, name_btree_address),
+      BTreeV2AttributeNames.create(this._source, name_btree_address),
     ]);
 
     const attrs: Record<string, any> = {};
